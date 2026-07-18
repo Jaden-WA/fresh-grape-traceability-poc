@@ -1,0 +1,33 @@
+{
+  "name": "fresh-grape-traceability-poc",
+  "version": "1.0.0",
+  "private": true,
+  "description": "COMP6452 Task 3 Solidity PoC for fresh grape supply-chain traceability",
+  "type": "module",
+  "scripts": {
+    "build": "hardhat build",
+    "typecheck": "tsc --noEmit",
+    "test": "hardhat test",
+    "demo": "hardhat run scripts/demo.ts",
+    "deploy:local": "hardhat run scripts/deploy.ts",
+    "deploy:sepolia": "hardhat run scripts/deploy.ts --build-profile production --network sepolia",
+    "oracle:sepolia": "hardhat run scripts/submit-temperature-oracle.ts --network sepolia",
+    "submission:check": "node scripts/check-submission.mjs",
+    "clean": "hardhat clean"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox-mocha-ethers": "3.0.7",
+    "@types/chai": "5.2.3",
+    "@types/mocha": "10.0.10",
+    "@types/node": "^24.0.0",
+    "chai": "6.2.2",
+    "ethers": "6.17.0",
+    "hardhat": "3.10.0",
+    "mocha": "11.7.6",
+    "typescript": "^5.9.0"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "packageManager": "pnpm@11.9.0"
+}

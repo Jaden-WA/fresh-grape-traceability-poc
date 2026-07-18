@@ -1,0 +1,11 @@
+{
+  "batchId": "GRAPE-2026-002",
+  "sensorId": "TEMP-SENSOR-22",
+  "allowedMinC": 0,
+  "allowedMaxC": 8,
+  "readings": [
+    { "timestamp": "2026-07-18T08:00:00Z", "celsius": 4.5 },
+    { "timestamp": "2026-07-18T10:00:00Z", "celsius": 8.8 },
+    { "timestamp": "2026-07-18T12:00:00Z", "celsius": 9.4 }
+  ]
+}
