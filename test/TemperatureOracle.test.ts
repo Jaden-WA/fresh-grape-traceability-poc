@@ -1,5 +1,6 @@
 import { expect } from "chai";
-import { access, mkdtemp, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -62,13 +63,28 @@ describe("Temperature oracle and off-chain storage", function () {
   it("stores raw evidence and summary files off-chain", async function () {
     const temporaryStore = await mkdtemp(path.join(tmpdir(), "grape-store-test-"));
     try {
+      const inputPath = path.join(
+        process.cwd(),
+        "data",
+        "temperature-logs",
+        "GRAPE-2026-001.json",
+      );
       const result = await processTemperatureLog(
-        path.join(process.cwd(), "data", "temperature-logs", "GRAPE-2026-001.json"),
+        inputPath,
         temporaryStore,
       );
+      const originalBytes = await readFile(inputPath);
+      const expectedEvidenceHash = `0x${createHash("sha256")
+        .update(originalBytes)
+        .digest("hex")}`;
+      const expectedSummaryHash = `0x${createHash("sha256")
+        .update(JSON.stringify(result.summary), "utf8")
+        .digest("hex")}`;
 
       expect(result.evidenceHash).to.match(/^0x[0-9a-f]{64}$/);
       expect(result.summaryHash).to.match(/^0x[0-9a-f]{64}$/);
+      expect(result.evidenceHash).to.equal(expectedEvidenceHash);
+      expect(result.summaryHash).to.equal(expectedSummaryHash);
       expect(result.uri).to.match(/^offchain:\/\/temperature\//);
       expect(result.summary.thresholdBreached).to.equal(false);
       await access(path.resolve(process.cwd(), result.storedEvidencePath));
