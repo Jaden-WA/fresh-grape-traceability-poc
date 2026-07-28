@@ -82,6 +82,20 @@ describe("GrapeTraceability", function () {
     return fixture.traceability.batchKey(BATCH_ID);
   }
 
+  it("rejects a zero address or wallet address as the actor registry", async function () {
+    const fixture = await networkHelpers.loadFixture(deploySystemFixture);
+    const factory = await ethers.getContractFactory("GrapeTraceability");
+    const outsiderAddress = await fixture.outsider.getAddress();
+
+    await expect(factory.deploy(ethers.ZeroAddress)).to.be.revertedWithCustomError(
+      fixture.traceability,
+      "ZeroAddress",
+    );
+    await expect(factory.deploy(outsiderAddress))
+      .to.be.revertedWithCustomError(fixture.traceability, "InvalidActorRegistry")
+      .withArgs(outsiderAddress);
+  });
+
   it("allows only an active producer to create a batch", async function () {
     const fixture = await networkHelpers.loadFixture(deploySystemFixture);
     const { producer, outsider, traceability } = fixture;
@@ -108,6 +122,39 @@ describe("GrapeTraceability", function () {
     ).to.be.revertedWithCustomError(traceability, "RequiredRole");
   });
 
+  it("blocks suspended actors from creating or transferring batches", async function () {
+    const fixture = await networkHelpers.loadFixture(deploySystemFixture);
+    const { producer, transporter, retailer, registry, traceability } = fixture;
+    const latestBlock = await ethers.provider.getBlock("latest");
+    const harvestDate = BigInt((latestBlock?.timestamp ?? 1) - 3_600);
+    const producerAddress = await producer.getAddress();
+    const transporterAddress = await transporter.getAddress();
+
+    await (await registry.setActorActive(producerAddress, false)).wait();
+    await expect(
+      traceability
+        .connect(producer)
+        .createBatch(BATCH_ID, "Fresh table grapes", harvestDate),
+    ).to.be.revertedWithCustomError(traceability, "RequiredRole");
+
+    await (await registry.setActorActive(producerAddress, true)).wait();
+    const key = await createDefaultBatch(fixture);
+    await (
+      await traceability
+        .connect(producer)
+        .transferCustody(key, transporterAddress, ethers.id("pickup"))
+    ).wait();
+    await (await registry.setActorActive(transporterAddress, false)).wait();
+
+    await expect(
+      traceability
+        .connect(transporter)
+        .transferCustody(key, await retailer.getAddress(), ethers.id("delivery")),
+    )
+      .to.be.revertedWithCustomError(traceability, "ActorNotActive")
+      .withArgs(transporterAddress);
+  });
+
   it("rejects duplicate batches and future harvest dates", async function () {
     const fixture = await networkHelpers.loadFixture(deploySystemFixture);
     const { producer, traceability } = fixture;
@@ -128,6 +175,12 @@ describe("GrapeTraceability", function () {
         .connect(producer)
         .createBatch("GRAPE-FUTURE", "Fresh table grapes", futureHarvestDate),
     ).to.be.revertedWithCustomError(traceability, "InvalidHarvestDate");
+    await expect(
+      traceability.connect(producer).createBatch("", "Fresh table grapes", validHarvestDate),
+    ).to.be.revertedWithCustomError(traceability, "EmptyValue");
+    await expect(
+      traceability.connect(producer).createBatch("GRAPE-EMPTY", "", validHarvestDate),
+    ).to.be.revertedWithCustomError(traceability, "EmptyValue");
   });
 
   it("enforces the Producer -> Transporter -> Retailer custody route", async function () {
@@ -208,6 +261,49 @@ describe("GrapeTraceability", function () {
     expect((await traceability.getBatch(key)).qualityRecordCount).to.equal(1n);
   });
 
+  it("rejects missing evidence and quality writes by a previous custodian", async function () {
+    const fixture = await networkHelpers.loadFixture(deploySystemFixture);
+    const { producer, transporter, registry, regulator, traceability } = fixture;
+    const key = await createDefaultBatch(fixture);
+    await (
+      await traceability
+        .connect(producer)
+        .transferCustody(key, await transporter.getAddress(), ethers.id("pickup"))
+    ).wait();
+
+    await expect(
+      traceability
+        .connect(transporter)
+        .addQualityRecord(key, 0, ethers.ZeroHash, ethers.id("summary"), "offchain://temp", false),
+    ).to.be.revertedWithCustomError(traceability, "InvalidEvidenceHash");
+    await expect(
+      traceability
+        .connect(producer)
+        .addQualityRecord(
+          key,
+          0,
+          ethers.id("old-custodian"),
+          ethers.id("summary"),
+          "offchain://temp",
+          false,
+        ),
+    ).to.be.revertedWithCustomError(traceability, "NotQualityWriter");
+
+    expect(await registry.hasRole(await regulator.getAddress(), Role.Regulator)).to.equal(true);
+    await expect(
+      traceability
+        .connect(regulator)
+        .addQualityRecord(
+          key,
+          1,
+          ethers.id("regulator-inspection"),
+          ethers.ZeroHash,
+          "offchain://inspection",
+          false,
+        ),
+    ).to.emit(traceability, "QualityAdded");
+  });
+
   it("connects the off-chain oracle output to the on-chain quality record", async function () {
     const fixture = await networkHelpers.loadFixture(deploySystemFixture);
     const { producer, transporter, traceability } = fixture;
@@ -274,7 +370,7 @@ describe("GrapeTraceability", function () {
     ).to.be.revertedWithCustomError(traceability, "BatchLocked");
   });
 
-  it("allows the regulator or current retailer to recall a batch", async function () {
+  it("allows the current retailer to flag and the regulator to recall a batch", async function () {
     const fixture = await networkHelpers.loadFixture(deploySystemFixture);
     const { producer, transporter, retailer, regulator, traceability } = fixture;
     const key = await createDefaultBatch(fixture);
@@ -298,6 +394,29 @@ describe("GrapeTraceability", function () {
       traceability
         .connect(regulator)
         .markRecalled(key, ethers.id("recall-order"), "offchain://recall/order"),
+    ).to.emit(traceability, "BatchRecalled");
+    expect((await traceability.getBatch(key)).status).to.equal(Status.Recalled);
+  });
+
+  it("allows the current retailer to recall a delivered batch", async function () {
+    const fixture = await networkHelpers.loadFixture(deploySystemFixture);
+    const { producer, transporter, retailer, traceability } = fixture;
+    const key = await createDefaultBatch(fixture);
+    await (
+      await traceability
+        .connect(producer)
+        .transferCustody(key, await transporter.getAddress(), ethers.id("pickup"))
+    ).wait();
+    await (
+      await traceability
+        .connect(transporter)
+        .transferCustody(key, await retailer.getAddress(), ethers.id("delivery"))
+    ).wait();
+
+    await expect(
+      traceability
+        .connect(retailer)
+        .markRecalled(key, ethers.id("retailer-recall"), "offchain://recall/retailer"),
     ).to.emit(traceability, "BatchRecalled");
     expect((await traceability.getBatch(key)).status).to.equal(Status.Recalled);
   });
