@@ -75,6 +75,23 @@ describe("ActorRegistry", function () {
     ).to.be.revertedWithCustomError(registry, "RoleAssignmentNotAllowed");
   });
 
+  it("removes enrolment authority while a regulator is suspended", async function () {
+    const { regulator, producer, registry } = await networkHelpers.loadFixture(
+      deployRegistryFixture,
+    );
+    const regulatorAddress = await regulator.getAddress();
+    await (await registry.registerActor(regulatorAddress, Role.Regulator)).wait();
+    await (await registry.setActorActive(regulatorAddress, false)).wait();
+
+    await expect(
+      registry
+        .connect(regulator)
+        .registerActor(await producer.getAddress(), Role.Producer),
+    )
+      .to.be.revertedWithCustomError(registry, "NotEnrolmentAuthority")
+      .withArgs(regulatorAddress);
+  });
+
   it("rejects enrolment by an unauthorised participant", async function () {
     const { producer, transporter, registry } = await networkHelpers.loadFixture(
       deployRegistryFixture,
