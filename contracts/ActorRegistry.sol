@@ -122,25 +122,30 @@ contract ActorRegistry {
         emit ActorStatusChanged(account, active);
     }
 
+    /// @notice Returns the complete registration record for an actor.
     function getActor(address account) external view returns (Actor memory) {
         Actor memory actor = actors[account];
         if (actor.registeredAt == 0) revert ActorNotRegistered(account);
         return actor;
     }
 
+    /// @notice Returns an actor's assigned role, or None when unregistered.
     function roleOf(address account) external view returns (Role) {
         return actors[account].role;
     }
 
+    /// @notice Returns whether an actor is currently active.
     function isActive(address account) public view returns (bool) {
         return actors[account].active;
     }
 
+    /// @notice Checks that an actor is active and has the requested role.
     function hasRole(address account, Role role) public view returns (bool) {
         Actor memory actor = actors[account];
         return actor.active && actor.role == role;
     }
 
+    /// @notice Checks whether an actor may enrol new participants.
     function isEnrolmentAuthority(address account) public view returns (bool) {
         Actor memory actor = actors[account];
         return
