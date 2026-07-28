@@ -94,6 +94,8 @@ console.log(
   `Temperature range: ${temperatureEvidence.summary.minimumC}C to ${temperatureEvidence.summary.maximumC}C`,
 );
 console.log(`Threshold breached: ${temperatureEvidence.summary.thresholdBreached}`);
+console.log(`Evidence SHA-256: ${temperatureEvidence.evidenceHash}`);
+console.log(`Summary SHA-256: ${temperatureEvidence.summaryHash}`);
 console.log(`Raw evidence stored at: ${temperatureEvidence.storedEvidencePath}`);
 console.log(`Summary stored at: ${temperatureEvidence.storedSummaryPath}`);
 
