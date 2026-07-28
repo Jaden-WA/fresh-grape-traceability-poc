@@ -98,6 +98,7 @@ contract GrapeTraceability {
     );
 
     error ZeroAddress();
+    error InvalidActorRegistry(address account);
     error EmptyValue();
     error InvalidHarvestDate(uint64 harvestDate);
     error BatchAlreadyExists(bytes32 batchKey);
@@ -115,6 +116,9 @@ contract GrapeTraceability {
 
     constructor(address actorRegistryAddress) {
         if (actorRegistryAddress == address(0)) revert ZeroAddress();
+        if (actorRegistryAddress.code.length == 0) {
+            revert InvalidActorRegistry(actorRegistryAddress);
+        }
         actorRegistry = ActorRegistry(actorRegistryAddress);
     }
 
@@ -293,6 +297,8 @@ contract GrapeTraceability {
         }
     }
 
+    /// @notice Flags a batch after a safety issue is identified.
+    /// @dev Only a regulator or the retailer currently holding the batch may call.
     function flagContaminated(
         bytes32 key,
         bytes32 reasonHash,
@@ -310,6 +316,8 @@ contract GrapeTraceability {
         emit BatchFlagged(key, msg.sender, reasonHash, uri, uint64(block.timestamp));
     }
 
+    /// @notice Recalls a batch and emits an auditable reason reference.
+    /// @dev Only a regulator or the retailer currently holding the batch may call.
     function markRecalled(
         bytes32 key,
         bytes32 reasonHash,
@@ -326,28 +334,34 @@ contract GrapeTraceability {
         emit BatchRecalled(key, msg.sender, reasonHash, uri, uint64(block.timestamp));
     }
 
+    /// @notice Returns the current state of a batch by its key.
     function getBatch(bytes32 key) external view returns (Batch memory) {
         return _getBatch(key);
     }
 
+    /// @notice Returns the current state of a batch by its external identifier.
     function getBatchByExternalId(string calldata externalId) external view returns (Batch memory) {
         return _getBatch(batchKey(externalId));
     }
 
+    /// @notice Returns the complete custody-transfer history for a batch.
     function getCustodyHistory(bytes32 key) external view returns (CustodyRecord[] memory) {
         _getBatch(key);
         return custodyHistory[key];
     }
 
+    /// @notice Returns the complete quality-evidence history for a batch.
     function getQualityHistory(bytes32 key) external view returns (QualityRecord[] memory) {
         _getBatch(key);
         return qualityHistory[key];
     }
 
+    /// @notice Returns whether a batch key has been registered.
     function batchExists(bytes32 key) external view returns (bool) {
         return batches[key].createdAt != 0;
     }
 
+    /// @notice Derives the canonical on-chain key for an external batch identifier.
     function batchKey(string memory externalId) public pure returns (bytes32) {
         return keccak256(bytes(externalId));
     }
