@@ -3,8 +3,8 @@
 COMP6452 Project 2 Task 3 implementation of a blockchain-based fresh grape
 supply-chain traceability system. The PoC uses two Solidity contracts, a
 file-backed off-chain evidence store, and a temperature oracle script. It has no
-traditional backend server and no GUI; all interactions are demonstrated through
-Hardhat/ethers scripts, contract events, and read-only getters.
+traditional backend server. A lightweight React DApp and the Hardhat/ethers CLI
+demo both call the same contracts and expose contract events and read-only getters.
 
 ## Task 3 coverage
 
@@ -15,6 +15,7 @@ Hardhat/ethers scripts, contract events, and read-only getters.
 | Off-chain computation | Temperature oracle computes min/max/average and threshold breaches |
 | Off-chain storage | `FileEvidenceStore` stores detailed logs and summaries outside the EVM |
 | Oracle | Authorised script submits hashes, summary hash, URI, and breach result on-chain |
+| Presentation UI | React DApp calls the local blockchain directly through ethers.js |
 | Testing | Role, state-machine, recall, privacy placement, oracle and integration tests |
 
 ## Architecture
@@ -31,6 +32,8 @@ Hardhat/ethers scripts, contract events, and read-only getters.
   replaced by IPFS, cloud storage, or a shared database without changing the
   smart contract.
 - `scripts/demo.ts` deploys and demonstrates the complete cross-component flow.
+- `frontend/` provides a simple presentation DApp without a traditional backend.
+  It uses the five unlocked Hardhat accounts as the five supply-chain actors.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the component and sequence views.
 
@@ -90,6 +93,32 @@ The demo performs these actions:
 Runtime evidence is written under `offchain-storage/generated/`. This directory is
 ignored by Git and must not be included in the final submission archive.
 
+## Run the presentation DApp
+
+Open three terminals in the project folder and run the following commands in
+order. Keep the first and third terminals running.
+
+```powershell
+# Terminal 1: local blockchain
+pnpm node:local
+
+# Terminal 2: deploy both contracts and generate the frontend deployment file
+pnpm deploy:localhost
+
+# Terminal 3: presentation UI
+pnpm frontend:dev
+```
+
+Open `http://127.0.0.1:5173` and select **Run full demo**. The page registers all
+five roles, creates a grape batch, performs both custody transfers, computes real
+SHA-256 evidence hashes in the browser, submits two quality records, recalls the
+batch, and displays the final on-chain history.
+
+The DApp uses the browser Web Crypto API for off-chain computation and
+`localStorage` as its small presentation storage adapter. The CLI `pnpm demo`
+continues to demonstrate the file-backed off-chain store required by the main
+PoC architecture. See `FRONTEND_DEMO_GUIDE_CN.txt` for the classroom steps.
+
 ## Deploy to Sepolia
 
 Use only a test wallet and never commit its private key.
@@ -140,3 +169,4 @@ Run the tracked-file check before creating the final archive:
 ```powershell
 pnpm submission:check
 ```
+
