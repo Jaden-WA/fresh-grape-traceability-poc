@@ -1,0 +1,79 @@
+Fresh Grape Traceability PoC - 前端演示说明
+
+一、前端的作用
+
+这个前端是一个简单的 React DApp，不使用传统后端服务器。
+它通过 ethers.js 直接连接本地 Hardhat 区块链，并调用 ActorRegistry.sol
+和 GrapeTraceability.sol。Hardhat 提供的前五个测试账户分别代表：
+Administrator、Regulator、Producer、Transporter 和 Retailer。
+
+二、启动方法
+
+先在项目目录执行 pnpm install，然后打开三个终端：
+
+终端 1：
+pnpm node:local
+
+终端 2：
+pnpm deploy:localhost
+
+终端 3：
+pnpm frontend:dev
+
+浏览器打开：
+http://127.0.0.1:5173
+
+注意：终端 1 和终端 3 需要保持运行。终端 2 部署成功后可以关闭。
+
+三、课堂 Demo 的最简单操作
+
+1. 确认右上角显示 Connected 和 Chain 31337。
+2. 点击 Run full demo。
+3. 等待大约数秒，不需要连续点击其他按钮。
+4. 页面最终应显示：
+   - 五个参与者均有正确角色；
+   - 批次状态为 Recalled；
+   - Transfers 为 2；
+   - Quality records 为 2；
+   - Temperature oracle 显示最低、平均和最高温度；
+   - Evidence SHA-256 和 Summary SHA-256 已真实生成；
+   - Custody history 显示 Producer -> Transporter -> Retailer；
+   - Blockchain activity 显示每笔交易的区块号和交易哈希。
+
+如果再次点击 Run full demo，前端会自动生成一个新的 Batch ID，避免重复批次错误。
+
+四、前端中链上和链下分别是什么
+
+链上部分：
+- 角色注册和权限检查；
+- 批次创建；
+- custody transfer；
+- 质量证据 hash 和 URI；
+- recall 状态；
+- transaction、event 和 trace history。
+
+链下部分：
+- 浏览器读取温度样本；
+- 使用 Web Crypto API 计算温度 summary 和真实 SHA-256；
+- 使用 localStorage 保存详细温度数据和 summary；
+- 只把 hash、URI 和 threshold result 提交到合约。
+
+五、与 pnpm demo 的区别
+
+前端 Demo 适合课堂展示，因为流程清楚而且可以看到状态变化。
+pnpm demo 适合证明完整工程实现，因为它使用脚本读取真实 JSON 文件，
+在 offchain-storage/generated/ 中保存证据文件，再由 oracle 脚本提交结果。
+两种方式调用的是同一套智能合约和业务规则。
+
+六、常见问题
+
+如果页面显示无法连接或合约地址不存在：
+1. 停止旧的本地节点和前端。
+2. 重新运行 pnpm node:local。
+3. 重新运行 pnpm deploy:localhost。
+4. 重新运行 pnpm frontend:dev。
+5. 刷新浏览器页面。
+
+每次重新启动 Hardhat 节点后都必须重新执行 pnpm deploy:localhost，
+因为新的本地区块链中没有上一次部署的合约。
+
