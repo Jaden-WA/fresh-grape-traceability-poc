@@ -32,4 +32,15 @@ export async function writeDeploymentFiles(record: DeploymentRecord): Promise<vo
     "",
   ].join("\n");
   await writeFile(path.join(process.cwd(), "addresses.txt"), addressesText, "utf8");
+
+  if (record.network === "localhost") {
+    const frontendPublicDirectory = path.join(process.cwd(), "frontend", "public");
+    await mkdir(frontendPublicDirectory, { recursive: true });
+    await writeFile(
+      path.join(frontendPublicDirectory, "deployment.json"),
+      `${JSON.stringify(record, null, 2)}\n`,
+      "utf8",
+    );
+  }
 }
+
