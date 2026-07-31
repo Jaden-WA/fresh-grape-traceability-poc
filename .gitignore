@@ -12,9 +12,11 @@ out/
 .env.*
 !.env.example
 deployments/*.json
+frontend/public/deployment.json
 offchain-storage/generated/
 proj2_3.zip
 proj2_3.tar.gz
 *.log
 .DS_Store
 Thumbs.db
+
