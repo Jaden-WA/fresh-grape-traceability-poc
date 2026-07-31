@@ -12,10 +12,12 @@ Now I will demonstrate the on-chain part of our fresh grape traceability PoC.
 Before the integrated demo, we used Remix for contract-level validation.
 In Remix, we deployed ActorRegistry dot sol first, and then deployed
 GrapeTraceability dot sol with the registry address.
-We switched between different accounts to test role permissions, batch creation,
-custody transfer, quality records and recall.
-The successful transactions and expected revert messages show that our Solidity
-contracts and access-control rules work correctly.
+The first screenshot shows getActor returning an active Producer role.
+The second screenshot shows an authorised contamination action emitting the
+BatchFlagged event. The third screenshot shows markRecalled emitting the
+BatchRecalled event. These focused checks confirm that actor lookup and the main
+safety actions work correctly. The complete batch, custody, quality and oracle
+workflow is demonstrated next through pnpm demo.
 
 [Switch to the pnpm demo terminal]
 
@@ -58,9 +60,10 @@ and oracle submission shown in steps six to nine.
 
 在进行集成演示之前，我们使用 Remix 对合约进行单独验证。
 我们先部署 ActorRegistry.sol，再将它的地址传入 GrapeTraceability.sol。
-我们通过切换不同账户测试角色权限、批次创建、custody transfer、
-质量记录和 recall。成功交易以及符合预期的 revert 信息证明 Solidity
-合约和访问控制规则能够正确工作。
+第一张截图显示 getActor 返回一个 active 的 Producer 角色。第二张截图显示
+授权账户执行污染标记并产生 BatchFlagged event。第三张截图显示 markRecalled
+产生 BatchRecalled event。这些针对性测试证明角色查询和主要安全操作能够正确
+工作。完整的批次、custody、质量记录和 oracle 流程将在 pnpm demo 中展示。
 
 [切换到 pnpm demo 控制台]
 
