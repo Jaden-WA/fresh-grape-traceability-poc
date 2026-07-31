@@ -1,0 +1,118 @@
+Remix 快速补图清单
+
+目标：用最少截图说明完整的链上业务逻辑。
+
+重要说明：
+- Remix 截图是代表性手动验证，不是完整测试覆盖率证明。
+- 27 个自动化测试负责系统性验证。
+- pnpm demo 负责完整链上、链下和 oracle 集成流程。
+- 截图必须包含函数名和成功结果，只有参数输入不能证明函数已执行。
+
+一、已有且可以直接使用的截图
+
+1. getActor(address)
+证明：Producer 已注册，role=2，active=true。
+
+2. flagContaminated(bytes32,bytes32,string)
+证明：授权账户能够标记污染，交易 status=1，并产生 BatchFlagged event。
+
+3. markRecalled(bytes32,bytes32,string)
+证明：Regulator 能够 recall，产生 BatchRecalled event。
+
+二、建议快速补充的三组截图
+
+截图 A：批次创建成功
+
+账户：Producer
+函数：createBatch(string,string,uint64)
+
+参数：
+externalId  = GRAPE-REMIX-002
+productType = Fresh table grapes
+harvestDate = 1750000000
+
+截图必须保留：
+- createBatch 函数名
+- status = 1 Transaction mined
+- decoded input
+- decoded output 中的 bytes32 batch key
+- BatchCreated event
+
+这张截图证明：Producer 可以创建批次，对应 batch registration FR。
+
+截图 B：custody transfer 和完整 custody history
+
+第一笔：Producer -> Transporter
+函数：transferCustody(bytes32,address,bytes32)
+
+参数：
+key          = createBatch 返回的 bytes32 key
+newCustodian = Transporter 地址
+evidenceHash = 0x1111111111111111111111111111111111111111111111111111111111111111
+
+第二笔：切换到 Transporter，Transporter -> Retailer
+
+参数：
+key          = 同一个 bytes32 key
+newCustodian = Retailer 地址
+evidenceHash = 0x2222222222222222222222222222222222222222222222222222222222222222
+
+然后调用：getCustodyHistory(bytes32)
+
+截图必须保留：
+- CustodyTransferred 成功 event，或者
+- getCustodyHistory 返回的两条记录：
+  Producer -> Transporter
+  Transporter -> Retailer
+
+这组截图证明：合约执行并保存有效的 custody route。
+
+截图 C：质量记录成功
+
+账户：Transporter，必须在第一笔 custody transfer 之后调用
+函数：addQualityRecord(bytes32,uint8,bytes32,bytes32,string,bool)
+
+参数：
+key               = 同一个 bytes32 key
+recordType        = 0
+evidenceHash      = 0x3333333333333333333333333333333333333333333333333333333333333333
+summaryHash       = 0x4444444444444444444444444444444444444444444444444444444444444444
+uri               = offchain://temperature/GRAPE-REMIX-002
+thresholdBreached = false
+
+截图必须保留：
+- addQualityRecord 函数名
+- status = 1
+- QualityAdded event
+- evidenceHash、summaryHash 和 URI
+
+这张截图只证明合约能够接收链下结果引用。真实 SHA-256 和链下文件由
+pnpm demo 展示，不要把这些占位 hash 描述成真实计算结果。
+
+三、最后查询截图
+
+完成 markRecalled 后调用：getBatch(bytes32)
+
+理想输出：
+- externalId = GRAPE-REMIX-002
+- currentCustodian = Retailer 地址
+- transferCount = 2
+- qualityRecordCount >= 1
+- status = 5，也就是 Recalled
+
+这张截图可以作为整个 Remix 部分的最后总结图。
+
+四、建议 PPT 最终只展示三张
+
+1. getActor + createBatch：角色和批次创建。
+2. getCustodyHistory + QualityAdded：custody 与质量记录。
+3. getBatch status=Recalled + BatchRecalled：最终状态。
+
+flagContaminated 可以作为 Q&A 备用图，不需要在 2.5 分钟主讲中展开。
+
+五、不要使用的截图
+
+- 只有输入框、没有 status=1 或 event 的截图。
+- 包含 too many arguments 的截图。
+- 使用 0x1111、0x3333 等占位值，却声称它们来自真实文件计算的截图。
+
