@@ -7,9 +7,15 @@
   "scripts": {
     "build": "hardhat build",
     "typecheck": "tsc --noEmit",
+    "frontend:typecheck": "tsc -p frontend/tsconfig.json",
+    "frontend:dev": "vite --config vite.config.ts",
+    "frontend:build": "vite build --config vite.config.ts",
+    "frontend:preview": "vite preview --config vite.config.ts",
+    "node:local": "hardhat node",
     "test": "hardhat test",
     "demo": "hardhat run scripts/demo.ts",
     "deploy:local": "hardhat run scripts/deploy.ts",
+    "deploy:localhost": "hardhat run scripts/deploy.ts --network localhost",
     "deploy:sepolia": "hardhat run scripts/deploy.ts --build-profile production --network sepolia",
     "oracle:sepolia": "hardhat run scripts/submit-temperature-oracle.ts --network sepolia",
     "submission:check": "node scripts/check-submission.mjs",
@@ -20,14 +26,24 @@
     "@types/chai": "5.2.3",
     "@types/mocha": "10.0.10",
     "@types/node": "^24.0.0",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.5",
     "chai": "6.2.2",
     "ethers": "6.17.0",
     "hardhat": "3.10.0",
     "mocha": "11.7.6",
-    "typescript": "^5.9.0"
+    "typescript": "^5.9.0",
+    "vite": "^8.2.0"
   },
   "engines": {
     "node": ">=22.13.0"
   },
-  "packageManager": "pnpm@11.9.0"
+  "packageManager": "pnpm@11.9.0",
+  "dependencies": {
+    "lucide-react": "^1.28.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  }
 }
+
