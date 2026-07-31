@@ -105,7 +105,7 @@ export async function processTemperatureLog(
   const parsed = JSON.parse(originalBytes.toString("utf8")) as TemperatureLog;
   const summary = computeTemperatureSummary(parsed);
   const evidenceHash = sha256Bytes(originalBytes);
-  const summaryBytes = Buffer.from(JSON.stringify(summary), "utf8");
+  const summaryBytes = Buffer.from(`${JSON.stringify(summary, null, 2)}\n`, "utf8");
   const summaryHash = sha256Bytes(summaryBytes);
 
   const store = new FileEvidenceStore(storageRoot);
@@ -116,10 +116,10 @@ export async function processTemperatureLog(
     `${safeBatchId}-${hashPrefix}.json`,
     originalBytes,
   );
-  const storedSummaryPath = await store.storeJson(
+  const storedSummaryPath = await store.storeBytes(
     "temperature-summaries",
     `${safeBatchId}-${hashPrefix}.json`,
-    summary,
+    summaryBytes,
   );
 
   return {
