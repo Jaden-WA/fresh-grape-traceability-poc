@@ -9,15 +9,18 @@ English speaking script
 
 Now I will demonstrate the on-chain part of our fresh grape traceability PoC.
 
-Before the integrated demo, we used Remix for contract-level validation.
+Before the integrated demo, we used Remix for manual contract-level validation.
 In Remix, we deployed ActorRegistry dot sol first, and then deployed
 GrapeTraceability dot sol with the registry address.
+The images shown here are selected screenshots from representative function
+tests, rather than the complete test record.
 The first screenshot shows getActor returning an active Producer role.
 The second screenshot shows an authorised contamination action emitting the
 BatchFlagged event. The third screenshot shows markRecalled emitting the
 BatchRecalled event. These focused checks confirm that actor lookup and the main
-safety actions work correctly. The complete batch, custody, quality and oracle
-workflow is demonstrated next through pnpm demo.
+safety actions work correctly. Comprehensive verification is provided by our
+automated tests, while the complete batch, custody, quality and oracle workflow
+is demonstrated next through pnpm demo.
 
 [Switch to the pnpm demo terminal]
 
@@ -58,12 +61,14 @@ and oracle submission shown in steps six to nine.
 
 现在我将演示新鲜葡萄溯源 PoC 的链上部分。
 
-在进行集成演示之前，我们使用 Remix 对合约进行单独验证。
+在进行集成演示之前，我们使用 Remix 对合约进行手动的合约级验证。
 我们先部署 ActorRegistry.sol，再将它的地址传入 GrapeTraceability.sol。
+这里展示的是代表性函数测试的部分截图，并不是全部测试记录。
 第一张截图显示 getActor 返回一个 active 的 Producer 角色。第二张截图显示
 授权账户执行污染标记并产生 BatchFlagged event。第三张截图显示 markRecalled
 产生 BatchRecalled event。这些针对性测试证明角色查询和主要安全操作能够正确
-工作。完整的批次、custody、质量记录和 oracle 流程将在 pnpm demo 中展示。
+工作。自动化测试提供系统性验证，完整的批次、custody、质量记录和 oracle
+流程将在 pnpm demo 中展示。
 
 [切换到 pnpm demo 控制台]
 
