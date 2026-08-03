@@ -1,79 +1,85 @@
-Fresh Grape Traceability PoC - 前端演示说明
+Fresh Grape Traceability PoC - 前端人工演示说明
 
 一、前端的作用
 
-这个前端是一个简单的 React DApp，不使用传统后端服务器。
-它通过 ethers.js 直接连接本地 Hardhat 区块链，并调用 ActorRegistry.sol
-和 GrapeTraceability.sol。Hardhat 提供的前五个测试账户分别代表：
-Administrator、Regulator、Producer、Transporter 和 Retailer。
+这个React DApp不使用传统后端服务器。浏览器通过ethers.js直接连接Hardhat本地区块链。
+每一步都由演示者选择调用账户、填写参数并点击按钮发送真实交易，不再使用一键完整Demo。
 
 二、启动方法
 
-先在项目目录执行 pnpm install，然后打开三个终端：
+第一次运行或修改Solidity合约后先执行：
 
-终端 1：
-pnpm node:local
+pnpm build
 
-终端 2：
-pnpm deploy:localhost
+然后打开两个终端：
 
-终端 3：
-pnpm frontend:dev
+终端1：pnpm node:local
+终端2：pnpm frontend:dev
 
-浏览器打开：
-http://127.0.0.1:5173
+浏览器打开：http://127.0.0.1:5173
 
-注意：终端 1 和终端 3 需要保持运行。终端 2 部署成功后可以关闭。
+终端1和终端2必须保持运行。每次重新启动Hardhat节点后，需要在网页中重新部署合约。
 
-三、课堂 Demo 的最简单操作
+三、课堂Demo操作顺序
 
-1. 确认右上角显示 Connected 和 Chain 31337。
-2. 点击 Run full demo。
-3. 等待大约数秒，不需要连续点击其他按钮。
-4. 页面最终应显示：
-   - 五个参与者均有正确角色；
-   - 批次状态为 Recalled；
-   - Transfers 为 2；
-   - Quality records 为 2；
-   - Temperature oracle 显示最低、平均和最高温度；
-   - Evidence SHA-256 和 Summary SHA-256 已真实生成；
-   - Custody history 显示 Producer -> Transporter -> Retailer；
-   - Blockchain activity 显示每笔交易的区块号和交易哈希。
+Step 1 - Deploy contracts
+1. 点击Deploy ActorRegistry。
+2. 等待交易确认并显示ActorRegistry地址。
+3. 点击Deploy Traceability。
+4. 第二个合约会自动使用ActorRegistry地址作为constructor参数。
 
-如果再次点击 Run full demo，前端会自动生成一个新的 Batch ID，避免重复批次错误。
+Step 2 - Register actors
+1. Administrator是部署ActorRegistry的Account 0，部署时自动注册。
+2. Account 0把Account 1注册为Regulator。
+3. Account 1把Account 2注册为Producer。
+4. Account 1把Account 3注册为Transporter。
+5. Account 1把Account 4注册为Retailer。
 
-四、前端中链上和链下分别是什么
+Step 3 - Create batch
+1. Caller选择Account 2 Producer。
+2. 输入Batch ID、产品类型和harvest date。
+3. 点击Send createBatch transaction。
 
-链上部分：
-- 角色注册和权限检查；
-- 批次创建；
-- custody transfer；
-- 质量证据 hash 和 URI；
-- recall 状态；
-- transaction、event 和 trace history。
+Step 4 - Transfer custody
+1. 选择Producer to Transporter，点击发送交易。
+2. 完成温度质量记录后，再选择Transporter to Retailer并发送交易。
+3. 正常业务只有两次合法转移；第三次转移会被合约拒绝。
 
-链下部分：
-- 浏览器读取温度样本；
-- 使用 Web Crypto API 计算温度 summary 和真实 SHA-256；
-- 使用 localStorage 保存详细温度数据和 summary；
-- 只把 hash、URI 和 threshold result 提交到合约。
+Step 5 - Submit quality
+1. 输入sensor ID、允许温度范围和温度读数。
+2. 点击Run off-chain calculation。
+3. 页面计算最低、最高、平均温度、thresholdBreached和两个SHA-256 hash。
+4. Caller选择Account 3 Transporter。
+5. 点击Submit addQualityRecord，把hash、URI和超标结果提交到合约。
 
-五、与 pnpm demo 的区别
+Step 6 - Flag contamination
+1. 批次到达Retailer后，Caller选择Account 4 Retailer。
+2. 输入污染原因和链下证据URI。
+3. 点击Send flagContaminated transaction。
 
-前端 Demo 适合课堂展示，因为流程清楚而且可以看到状态变化。
-pnpm demo 适合证明完整工程实现，因为它使用脚本读取真实 JSON 文件，
-在 offchain-storage/generated/ 中保存证据文件，再由 oracle 脚本提交结果。
-两种方式调用的是同一套智能合约和业务规则。
+Step 7 - Recall batch
+1. Caller选择Account 1 Regulator。
+2. 输入recall原因和文档URI。
+3. 点击Send markRecalled transaction。
 
-六、常见问题
+Step 8 - Query history
+1. 输入Batch ID并点击Query read-only getters。
+2. 检查最终状态为Recalled。
+3. Custody history应显示Producer -> Transporter -> Retailer。
+4. Quality history应显示Temperature记录。
 
-如果页面显示无法连接或合约地址不存在：
-1. 停止旧的本地节点和前端。
-2. 重新运行 pnpm node:local。
-3. 重新运行 pnpm deploy:localhost。
-4. 重新运行 pnpm frontend:dev。
-5. 刷新浏览器页面。
+四、页面中展示的证据
 
-每次重新启动 Hardhat 节点后都必须重新执行 pnpm deploy:localhost，
-因为新的本地区块链中没有上一次部署的合约。
+- 两个合约地址；
+- 每个参与者的账户、角色和active状态；
+- 每笔交易的transaction hash和block number；
+- 当前批次状态、custodian、transfer数量和quality record数量；
+- 链下温度summary、SHA-256 hash和可下载的原始/summary文件；
+- 完整custody history和quality history；
+- 无权限调用和错误状态转移产生的revert信息。
 
+五、与pnpm demo和pnpm test的区别
+
+- 前端DApp：人工逐步发送交易，适合课堂展示。
+- pnpm demo：脚本自动执行一个端到端集成场景。
+- pnpm test：运行27个自动化测试并使用断言检查结果。
