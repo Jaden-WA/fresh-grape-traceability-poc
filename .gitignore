@@ -10,7 +10,6 @@ broadcast/
 out/
 .env
 .env.*
-!.env.example
 deployments/*.json
 frontend/public/deployment.json
 offchain-storage/generated/
