@@ -36,8 +36,6 @@ demo both call the same contracts and expose contract events and read-only gette
   backend. It uses unlocked Hardhat accounts as selectable transaction callers
   and deploys both contracts directly from the browser through ethers.js.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the component and sequence views.
-
 ## How the manual DApp is implemented
 
 The presentation UI is a thin blockchain client rather than a second backend:
@@ -169,8 +167,7 @@ ends at the Retailer.
 
 The DApp uses the browser Web Crypto API for off-chain computation and
 `localStorage` as its small presentation storage adapter. The CLI `pnpm demo`
-remains available as a separate scripted integration check. See
-`FRONTEND_DEMO_GUIDE_CN.txt` for the classroom steps.
+remains available as a separate scripted integration check.
 
 ## Deploy to Sepolia
 
