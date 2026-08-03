@@ -7,32 +7,36 @@ import {
   Clipboard,
   CloudUpload,
   Database,
-  FileCheck2,
+  Download,
+  Flag,
   Grape,
+  History,
   Link2,
-  PackageCheck,
   PackagePlus,
-  Play,
   RefreshCw,
+  Rocket,
   RotateCcw,
+  Search,
   ShieldCheck,
-  Store,
   Thermometer,
   Truck,
   UserRoundPlus,
+  WalletCards,
   type LucideIcon,
 } from "lucide-react";
 import {
   Contract,
+  ContractFactory,
   type ContractTransactionResponse,
   id,
+  type InterfaceAbi,
   JsonRpcProvider,
-  ZeroHash,
 } from "ethers";
 import {
-  ACTOR_REGISTRY_ABI,
-  type DeploymentRecord,
-  GRAPE_TRACEABILITY_ABI,
+  ACTOR_REGISTRY_ARTIFACT,
+  GRAPE_TRACEABILITY_ARTIFACT,
+} from "virtual:contract-artifacts";
+import {
   QUALITY_NAMES,
   ROLE,
   ROLE_NAMES,
@@ -41,18 +45,28 @@ import {
 } from "./contracts";
 import {
   type BrowserEvidence,
-  processInspectionEvidence,
   processTemperatureEvidence,
 } from "./evidence";
 
+const ACTOR_REGISTRY_ABI = ACTOR_REGISTRY_ARTIFACT.abi as InterfaceAbi;
+const GRAPE_TRACEABILITY_ABI = GRAPE_TRACEABILITY_ARTIFACT.abi as InterfaceAbi;
+
+type StepId =
+  | "deploy"
+  | "actors"
+  | "batch"
+  | "custody"
+  | "quality"
+  | "flag"
+  | "recall"
+  | "query";
+
 interface DemoContext {
   provider: JsonRpcProvider;
-  deployment: DeploymentRecord;
   accounts: string[];
 }
 
 interface ActorState {
-  label: string;
   address: string;
   role: number;
   active: boolean;
@@ -110,9 +124,23 @@ interface ActivityItem {
   title: string;
   detail: string;
   transactionHash?: string;
+  blockNumber?: number;
 }
 
-const ACTOR_LABELS = ["Administrator", "Regulator", "Producer", "Transporter", "Retailer"];
+interface SavedDeployment {
+  chainId: string;
+  actorRegistry?: string;
+  grapeTraceability?: string;
+}
+
+interface StepDefinition {
+  id: StepId;
+  label: string;
+  contract: string;
+  icon: LucideIcon;
+}
+
+const STORAGE_KEY = "fresh-grape-browser-deployment";
 const EXPECTED_ROLES = [
   ROLE.Administrator,
   ROLE.Regulator,
@@ -121,16 +149,29 @@ const EXPECTED_ROLES = [
   ROLE.Retailer,
 ];
 
+const STEPS: StepDefinition[] = [
+  { id: "deploy", label: "Deploy contracts", contract: "ContractFactory", icon: Rocket },
+  { id: "actors", label: "Register actors", contract: "ActorRegistry", icon: UserRoundPlus },
+  { id: "batch", label: "Create batch", contract: "createBatch", icon: PackagePlus },
+  { id: "custody", label: "Transfer custody", contract: "transferCustody", icon: Truck },
+  { id: "quality", label: "Submit quality", contract: "addQualityRecord", icon: Thermometer },
+  { id: "flag", label: "Flag contamination", contract: "flagContaminated", icon: Flag },
+  { id: "recall", label: "Recall batch", contract: "markRecalled", icon: RotateCcw },
+  { id: "query", label: "Query history", contract: "Read-only getters", icon: Search },
+];
+
 function shortAddress(value: string): string {
-  return value ? `${value.slice(0, 6)}...${value.slice(-4)}` : "Not available";
+  return value ? `${value.slice(0, 6)}...${value.slice(-4)}` : "Not deployed";
 }
 
 function shortHash(value: string): string {
-  return value ? `${value.slice(0, 12)}...${value.slice(-8)}` : "Not generated";
+  return value ? `${value.slice(0, 12)}...${value.slice(-8)}` : "Not available";
 }
 
-function formatTime(value: bigint): string {
-  return new Date(Number(value) * 1000).toLocaleTimeString([], {
+function formatTimestamp(value: bigint): string {
+  return new Date(Number(value) * 1000).toLocaleString([], {
+    month: "short",
+    day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
@@ -143,29 +184,79 @@ function errorMessage(error: unknown): string {
       shortMessage?: string;
       reason?: string;
       message?: string;
+      revert?: { name?: string };
+      info?: { error?: { message?: string } };
     };
-    return candidate.shortMessage ?? candidate.reason ?? candidate.message ?? "Unknown error";
+    return (
+      candidate.revert?.name ??
+      candidate.shortMessage ??
+      candidate.reason ??
+      candidate.info?.error?.message ??
+      candidate.message ??
+      "Unknown error"
+    );
   }
   return String(error);
+}
+
+function hashEvidence(value: string): string {
+  const trimmed = value.trim();
+  return /^0x[0-9a-fA-F]{64}$/.test(trimmed) ? trimmed : id(trimmed);
+}
+
+function defaultHarvestDate(): string {
+  return new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 16);
 }
 
 export default function App() {
   const contextRef = useRef<DemoContext | null>(null);
   const activityIdRef = useRef(0);
-  const initialConnectStartedRef = useRef(false);
+  const connectStartedRef = useRef(false);
+
   const [connection, setConnection] = useState<"connecting" | "connected" | "error">(
     "connecting",
   );
-  const [connectionMessage, setConnectionMessage] = useState("Connecting to Hardhat localhost");
-  const [deployment, setDeployment] = useState<DeploymentRecord | null>(null);
+  const [connectionMessage, setConnectionMessage] = useState("Connecting to Hardhat node");
+  const [chainId, setChainId] = useState("");
+  const [accounts, setAccounts] = useState<string[]>([]);
   const [actors, setActors] = useState<ActorState[]>([]);
+  const [registryAddress, setRegistryAddress] = useState("");
+  const [traceabilityAddress, setTraceabilityAddress] = useState("");
+  const [selectedStep, setSelectedStep] = useState<StepId>("deploy");
+  const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [activityItems, setActivityItems] = useState<ActivityItem[]>([]);
+
   const [batchId, setBatchId] = useState("GRAPE-WEB-001");
   const [batch, setBatch] = useState<BatchState | null>(null);
   const [custodyHistory, setCustodyHistory] = useState<CustodyRecord[]>([]);
   const [qualityHistory, setQualityHistory] = useState<QualityRecord[]>([]);
+
+  const [registerCaller, setRegisterCaller] = useState(0);
+  const [registerTarget, setRegisterTarget] = useState(1);
+  const [registerRole, setRegisterRole] = useState<number>(ROLE.Regulator);
+
+  const [batchCaller, setBatchCaller] = useState(2);
+  const [productType, setProductType] = useState("Fresh table grapes");
+  const [harvestDate, setHarvestDate] = useState(defaultHarvestDate);
+
+  const [custodyCaller, setCustodyCaller] = useState(2);
+  const [custodyTarget, setCustodyTarget] = useState(3);
+  const [custodyEvidence, setCustodyEvidence] = useState("pickup:GRAPE-WEB-001");
+
+  const [oracleCaller, setOracleCaller] = useState(3);
+  const [sensorId, setSensorId] = useState("TEMP-SENSOR-17");
+  const [allowedMin, setAllowedMin] = useState("0");
+  const [allowedMax, setAllowedMax] = useState("8");
+  const [temperatureValues, setTemperatureValues] = useState("4.2, 4.8, 5.1, 5.7, 5.3");
   const [evidence, setEvidence] = useState<BrowserEvidence | null>(null);
-  const [activityItems, setActivityItems] = useState<ActivityItem[]>([]);
-  const [busy, setBusy] = useState(false);
+
+  const [flagCaller, setFlagCaller] = useState(4);
+  const [flagReason, setFlagReason] = useState("inspection-failure");
+  const [flagUri, setFlagUri] = useState("https://storage.example/inspection/failure.json");
+
+  const [recallCaller, setRecallCaller] = useState(1);
+  const [recallReason, setRecallReason] = useState("regulatory-recall-order");
+  const [recallUri, setRecallUri] = useState("https://storage.example/recall/order.json");
 
   const addActivity = useCallback(
     (
@@ -173,94 +264,97 @@ export default function App() {
       title: string,
       detail: string,
       transactionHash?: string,
+      blockNumber?: number,
     ) => {
       activityIdRef.current += 1;
-      setActivityItems((current) =>
-        [
-          {
-            id: activityIdRef.current,
-            status,
-            title,
-            detail,
-            transactionHash,
-          },
-          ...current,
-        ].slice(0, 24),
-      );
+      setActivityItems((current) => [
+        {
+          id: activityIdRef.current,
+          status,
+          title,
+          detail,
+          transactionHash,
+          blockNumber,
+        },
+        ...current,
+      ].slice(0, 40));
     },
     [],
   );
 
   const requireContext = useCallback((): DemoContext => {
-    if (!contextRef.current) {
-      throw new Error("Local contracts are not connected");
-    }
+    if (!contextRef.current) throw new Error("Connect to the Hardhat node first");
     return contextRef.current;
   }, []);
 
-  const sendTransaction = useCallback(
-    async (title: string, transactionPromise: Promise<ContractTransactionResponse>) => {
-      const transaction = await transactionPromise;
-      const receipt = await transaction.wait();
-      if (!receipt) {
-        throw new Error(`${title} was not confirmed`);
-      }
-      addActivity(
-        "success",
-        title,
-        `Confirmed in block ${receipt.blockNumber}`,
-        transaction.hash,
-      );
-      return receipt;
+  const requireRegistry = useCallback((): string => {
+    if (!registryAddress) throw new Error("Deploy ActorRegistry first");
+    return registryAddress;
+  }, [registryAddress]);
+
+  const requireTraceability = useCallback((): string => {
+    if (!traceabilityAddress) throw new Error("Deploy GrapeTraceability first");
+    return traceabilityAddress;
+  }, [traceabilityAddress]);
+
+  const signerAt = useCallback(
+    async (index: number) => {
+      const context = requireContext();
+      if (!context.accounts[index]) throw new Error(`Account ${index} is not available`);
+      return context.provider.getSigner(index);
     },
-    [addActivity],
+    [requireContext],
   );
 
-  const refreshActors = useCallback(async (context = requireContext()) => {
-    const registry = new Contract(
-      context.deployment.actorRegistry,
-      ACTOR_REGISTRY_ABI,
-      context.provider,
-    );
-    const nextActors = await Promise.all(
-      context.accounts.slice(0, 5).map(async (address, index) => ({
-        label: ACTOR_LABELS[index],
-        address,
-        role: Number(await registry.roleOf(address)),
-        active: Boolean(await registry.isActive(address)),
-      })),
-    );
-    setActors(nextActors);
-  }, [requireContext]);
+  const persistDeployment = useCallback(
+    (actorRegistry?: string, grapeTraceability?: string, nextChainId = chainId) => {
+      const saved: SavedDeployment = {
+        chainId: nextChainId,
+        actorRegistry: actorRegistry || undefined,
+        grapeTraceability: grapeTraceability || undefined,
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(saved));
+    },
+    [chainId],
+  );
 
-  const refreshBatch = useCallback(
-    async (targetBatchId = batchId, context = requireContext()) => {
-      if (!targetBatchId.trim()) {
-        setBatch(null);
-        setCustodyHistory([]);
-        setQualityHistory([]);
+  const refreshActors = useCallback(
+    async (context = requireContext(), address = registryAddress) => {
+      if (!address) {
+        setActors(context.accounts.map((account) => ({ address: account, role: 0, active: false })));
         return;
       }
-      const traceability = new Contract(
-        context.deployment.grapeTraceability,
-        GRAPE_TRACEABILITY_ABI,
-        context.provider,
+      const registry = new Contract(address, ACTOR_REGISTRY_ABI, context.provider);
+      const nextActors = await Promise.all(
+        context.accounts.map(async (account) => ({
+          address: account,
+          role: Number(await registry.roleOf(account)),
+          active: Boolean(await registry.isActive(account)),
+        })),
       );
-      const key = (await traceability.batchKey(targetBatchId)) as string;
+      setActors(nextActors);
+    },
+    [registryAddress, requireContext],
+  );
+
+  const refreshBatch = useCallback(
+    async (targetBatchId = batchId, address = traceabilityAddress) => {
+      if (!address) throw new Error("Deploy GrapeTraceability first");
+      if (!targetBatchId.trim()) throw new Error("Enter a batch ID");
+      const context = requireContext();
+      const traceability = new Contract(address, GRAPE_TRACEABILITY_ABI, context.provider);
+      const key = (await traceability.batchKey(targetBatchId.trim())) as string;
       if (!(await traceability.batchExists(key))) {
         setBatch(null);
         setCustodyHistory([]);
         setQualityHistory([]);
-        return;
+        addActivity("info", "Batch not found", targetBatchId.trim());
+        return false;
       }
 
       const result = (await traceability.getBatch(key)) as unknown as BatchState;
-      const custody = (await traceability.getCustodyHistory(
-        key,
-      )) as unknown as RawCustodyRecord[];
-      const quality = (await traceability.getQualityHistory(
-        key,
-      )) as unknown as RawQualityRecord[];
+      const custody = (await traceability.getCustodyHistory(key)) as unknown as RawCustodyRecord[];
+      const quality = (await traceability.getQualityHistory(key)) as unknown as RawQualityRecord[];
       setBatch({
         externalId: result.externalId,
         productType: result.productType,
@@ -272,406 +366,424 @@ export default function App() {
         qualityRecordCount: Number(result.qualityRecordCount),
         status: Number(result.status),
       });
-      setCustodyHistory(
-        custody.map((record) => ({
-          from: record[0],
-          to: record[1],
-          transferredAt: BigInt(record[2]),
-          deliveryEvidenceHash: record[3],
-        })),
-      );
-      setQualityHistory(
-        quality.map((record) => ({
-          recordType: Number(record[0]),
-          evidenceHash: record[1],
-          summaryHash: record[2],
-          uri: record[3],
-          submittedBy: record[4],
-          submittedAt: BigInt(record[5]),
-          thresholdBreached: Boolean(record[6]),
-        })),
-      );
+      setCustodyHistory(custody.map((record) => ({
+        from: record[0],
+        to: record[1],
+        transferredAt: BigInt(record[2]),
+        deliveryEvidenceHash: record[3],
+      })));
+      setQualityHistory(quality.map((record) => ({
+        recordType: Number(record[0]),
+        evidenceHash: record[1],
+        summaryHash: record[2],
+        uri: record[3],
+        submittedBy: record[4],
+        submittedAt: BigInt(record[5]),
+        thresholdBreached: Boolean(record[6]),
+      })));
+      addActivity("info", "Trace refreshed", `${targetBatchId.trim()} is ${STATUS_NAMES[Number(result.status)]}`);
+      return true;
     },
-    [batchId, requireContext],
+    [addActivity, batchId, requireContext, traceabilityAddress],
   );
 
-  const connect = useCallback(async () => {
+  const connectNode = useCallback(async () => {
     setConnection("connecting");
-    setConnectionMessage("Connecting to Hardhat localhost");
+    setConnectionMessage("Connecting to Hardhat node");
     try {
-      const response = await fetch(`/deployment.json?time=${Date.now()}`, {
-        cache: "no-store",
-      });
-      if (!response.ok) {
-        throw new Error("Run pnpm deploy:localhost before opening the DApp");
-      }
-      const nextDeployment = (await response.json()) as DeploymentRecord;
       const provider = new JsonRpcProvider(RPC_URL);
       const network = await provider.getNetwork();
-      const registryCode = await provider.getCode(nextDeployment.actorRegistry);
-      const traceabilityCode = await provider.getCode(nextDeployment.grapeTraceability);
-      if (registryCode === "0x" || traceabilityCode === "0x") {
-        throw new Error("Deployment addresses do not exist on the current local node");
-      }
+      await provider.getBlockNumber();
       const signers = await provider.listAccounts();
-      const accounts = await Promise.all(signers.slice(0, 5).map((signer) => signer.getAddress()));
-      if (accounts.length < 5) {
-        throw new Error("Hardhat localhost must expose at least five accounts");
-      }
-      const context = { provider, deployment: nextDeployment, accounts };
+      const nextAccounts = await Promise.all(
+        signers.slice(0, 10).map((signer) => signer.getAddress()),
+      );
+      if (nextAccounts.length < 5) throw new Error("Hardhat must expose at least five accounts");
+
+      const context = { provider, accounts: nextAccounts };
       contextRef.current = context;
-      setDeployment(nextDeployment);
+      setAccounts(nextAccounts);
+      setChainId(network.chainId.toString());
       setConnection("connected");
-      setConnectionMessage(`Chain ${network.chainId.toString()} · ${nextDeployment.network}`);
-      await refreshActors(context);
-      addActivity("info", "Local contracts connected", `Chain ID ${network.chainId.toString()}`);
+      setConnectionMessage(`Hardhat chain ${network.chainId.toString()}`);
+
+      let savedRegistry = "";
+      let savedTraceability = "";
+      const savedText = localStorage.getItem(STORAGE_KEY);
+      if (savedText) {
+        const saved = JSON.parse(savedText) as SavedDeployment;
+        if (saved.chainId === network.chainId.toString()) {
+          if (saved.actorRegistry && await provider.getCode(saved.actorRegistry) !== "0x") {
+            savedRegistry = saved.actorRegistry;
+          }
+          if (saved.grapeTraceability && await provider.getCode(saved.grapeTraceability) !== "0x") {
+            savedTraceability = saved.grapeTraceability;
+          }
+        }
+      }
+      setRegistryAddress(savedRegistry);
+      setTraceabilityAddress(savedTraceability);
+      await refreshActors(context, savedRegistry);
+      if (savedTraceability) {
+        await refreshBatch(batchId, savedTraceability);
+      }
+      addActivity(
+        "success",
+        "Hardhat node connected",
+        savedTraceability ? "Saved contracts restored" : `${nextAccounts.length} unlocked accounts available`,
+      );
     } catch (error) {
       contextRef.current = null;
       setConnection("error");
       setConnectionMessage(errorMessage(error));
     }
-  }, [addActivity, refreshActors]);
+  }, [addActivity, batchId, refreshActors, refreshBatch]);
 
   useEffect(() => {
-    if (initialConnectStartedRef.current) return;
-    initialConnectStartedRef.current = true;
-    void connect();
-  }, [connect]);
-
-  const ensureActors = useCallback(async () => {
-    const context = requireContext();
-    const registryRead = new Contract(
-      context.deployment.actorRegistry,
-      ACTOR_REGISTRY_ABI,
-      context.provider,
-    );
-    const adminRegistry = new Contract(
-      context.deployment.actorRegistry,
-      ACTOR_REGISTRY_ABI,
-      await context.provider.getSigner(0),
-    );
-
-    const regulatorRole = Number(await registryRead.roleOf(context.accounts[1]));
-    if (regulatorRole === ROLE.None) {
-      await sendTransaction(
-        "Administrator registered Regulator",
-        adminRegistry.registerActor(context.accounts[1], ROLE.Regulator),
-      );
-    } else if (regulatorRole !== ROLE.Regulator) {
-      await sendTransaction(
-        "Administrator corrected Regulator role",
-        adminRegistry.updateRole(context.accounts[1], ROLE.Regulator),
-      );
-    }
-    if (!(await registryRead.isActive(context.accounts[1]))) {
-      await sendTransaction(
-        "Administrator reactivated Regulator",
-        adminRegistry.setActorActive(context.accounts[1], true),
-      );
-    }
-
-    const regulatorRegistry = new Contract(
-      context.deployment.actorRegistry,
-      ACTOR_REGISTRY_ABI,
-      await context.provider.getSigner(1),
-    );
-    for (const [accountIndex, role] of [
-      [2, ROLE.Producer],
-      [3, ROLE.Transporter],
-      [4, ROLE.Retailer],
-    ] as const) {
-      const address = context.accounts[accountIndex];
-      const currentRole = Number(await registryRead.roleOf(address));
-      if (currentRole === ROLE.None) {
-        await sendTransaction(
-          `Regulator registered ${ROLE_NAMES[role]}`,
-          regulatorRegistry.registerActor(address, role),
-        );
-      } else if (currentRole !== role) {
-        await sendTransaction(
-          `Administrator corrected ${ROLE_NAMES[role]} role`,
-          adminRegistry.updateRole(address, role),
-        );
-      }
-      if (!(await registryRead.isActive(address))) {
-        await sendTransaction(
-          `Administrator reactivated ${ROLE_NAMES[role]}`,
-          adminRegistry.setActorActive(address, true),
-        );
-      }
-    }
-    await refreshActors(context);
-  }, [refreshActors, requireContext, sendTransaction]);
-
-  const createBatch = useCallback(
-    async (targetBatchId: string) => {
-      const context = requireContext();
-      const traceabilityRead = new Contract(
-        context.deployment.grapeTraceability,
-        GRAPE_TRACEABILITY_ABI,
-        context.provider,
-      );
-      const key = (await traceabilityRead.batchKey(targetBatchId)) as string;
-      if (await traceabilityRead.batchExists(key)) {
-        addActivity("info", "Batch already exists", targetBatchId);
-        return key;
-      }
-      const producerTraceability = new Contract(
-        context.deployment.grapeTraceability,
-        GRAPE_TRACEABILITY_ABI,
-        await context.provider.getSigner(2),
-      );
-      const harvestDate = Math.floor(Date.now() / 1000) - 86_400;
-      await sendTransaction(
-        "Producer created grape batch",
-        producerTraceability.createBatch(targetBatchId, "Fresh table grapes", harvestDate),
-      );
-      await refreshBatch(targetBatchId, context);
-      return key;
-    },
-    [addActivity, refreshBatch, requireContext, sendTransaction],
-  );
-
-  const transferToTransporter = useCallback(
-    async (targetBatchId: string) => {
-      const context = requireContext();
-      const traceability = new Contract(
-        context.deployment.grapeTraceability,
-        GRAPE_TRACEABILITY_ABI,
-        await context.provider.getSigner(2),
-      );
-      const key = (await traceability.batchKey(targetBatchId)) as string;
-      await sendTransaction(
-        "Producer transferred custody to Transporter",
-        traceability.transferCustody(
-          key,
-          context.accounts[3],
-          id(`pickup:${targetBatchId}`),
-        ),
-      );
-      await refreshBatch(targetBatchId, context);
-    },
-    [refreshBatch, requireContext, sendTransaction],
-  );
-
-  const processEvidence = useCallback(async (targetBatchId: string) => {
-    const nextEvidence = await processTemperatureEvidence(targetBatchId);
-    setEvidence(nextEvidence);
-    addActivity(
-      "success",
-      "Off-chain temperature evidence generated",
-      `${nextEvidence.summary.minimumC}C–${nextEvidence.summary.maximumC}C · ${nextEvidence.summary.readingCount} readings`,
-    );
-    return nextEvidence;
-  }, [addActivity]);
-
-  const submitTemperatureEvidence = useCallback(
-    async (targetBatchId: string, nextEvidence = evidence) => {
-      if (!nextEvidence || nextEvidence.batchId !== targetBatchId) {
-        throw new Error("Generate temperature evidence for this batch first");
-      }
-      const context = requireContext();
-      const traceability = new Contract(
-        context.deployment.grapeTraceability,
-        GRAPE_TRACEABILITY_ABI,
-        await context.provider.getSigner(3),
-      );
-      const key = (await traceability.batchKey(targetBatchId)) as string;
-      await sendTransaction(
-        "Transporter submitted oracle evidence on-chain",
-        traceability.addQualityRecord(
-          key,
-          0,
-          nextEvidence.evidenceHash,
-          nextEvidence.summaryHash,
-          nextEvidence.uri,
-          nextEvidence.summary.thresholdBreached,
-        ),
-      );
-      await refreshBatch(targetBatchId, context);
-    },
-    [evidence, refreshBatch, requireContext, sendTransaction],
-  );
-
-  const transferToRetailer = useCallback(
-    async (targetBatchId: string) => {
-      const context = requireContext();
-      const traceability = new Contract(
-        context.deployment.grapeTraceability,
-        GRAPE_TRACEABILITY_ABI,
-        await context.provider.getSigner(3),
-      );
-      const key = (await traceability.batchKey(targetBatchId)) as string;
-      await sendTransaction(
-        "Transporter delivered batch to Retailer",
-        traceability.transferCustody(
-          key,
-          context.accounts[4],
-          id(`delivery:${targetBatchId}`),
-        ),
-      );
-      await refreshBatch(targetBatchId, context);
-    },
-    [refreshBatch, requireContext, sendTransaction],
-  );
-
-  const addInspection = useCallback(
-    async (targetBatchId: string) => {
-      const context = requireContext();
-      const inspection = await processInspectionEvidence(targetBatchId);
-      const traceability = new Contract(
-        context.deployment.grapeTraceability,
-        GRAPE_TRACEABILITY_ABI,
-        await context.provider.getSigner(4),
-      );
-      const key = (await traceability.batchKey(targetBatchId)) as string;
-      await sendTransaction(
-        "Retailer recorded inspection evidence",
-        traceability.addQualityRecord(
-          key,
-          1,
-          inspection.hash,
-          ZeroHash,
-          inspection.uri,
-          false,
-        ),
-      );
-      await refreshBatch(targetBatchId, context);
-    },
-    [refreshBatch, requireContext, sendTransaction],
-  );
-
-  const recallBatch = useCallback(
-    async (targetBatchId: string) => {
-      const context = requireContext();
-      const traceability = new Contract(
-        context.deployment.grapeTraceability,
-        GRAPE_TRACEABILITY_ABI,
-        await context.provider.getSigner(1),
-      );
-      const key = (await traceability.batchKey(targetBatchId)) as string;
-      await sendTransaction(
-        "Regulator recalled batch",
-        traceability.markRecalled(
-          key,
-          id(`recall:${targetBatchId}`),
-          `browser-storage://recall/${targetBatchId}`,
-        ),
-      );
-      await refreshBatch(targetBatchId, context);
-    },
-    [refreshBatch, requireContext, sendTransaction],
-  );
+    if (connectStartedRef.current) return;
+    connectStartedRef.current = true;
+    void connectNode();
+  }, [connectNode]);
 
   const runAction = useCallback(
-    async (action: () => Promise<void>) => {
-      if (busy) return;
-      setBusy(true);
+    async (label: string, action: () => Promise<void>) => {
+      if (busyAction) return;
+      setBusyAction(label);
       try {
         await action();
       } catch (error) {
-        addActivity("error", "Action rejected", errorMessage(error));
+        addActivity("error", `${label} rejected`, errorMessage(error));
       } finally {
-        setBusy(false);
+        setBusyAction(null);
       }
     },
-    [addActivity, busy],
+    [addActivity, busyAction],
   );
 
-  const runFullDemo = useCallback(async () => {
-    await runAction(async () => {
-      const context = requireContext();
-      const traceability = new Contract(
-        context.deployment.grapeTraceability,
-        GRAPE_TRACEABILITY_ABI,
-        context.provider,
+  const sendTransaction = useCallback(
+    async (
+      title: string,
+      callerIndex: number,
+      transactionPromise: Promise<ContractTransactionResponse>,
+    ) => {
+      const transaction = await transactionPromise;
+      const receipt = await transaction.wait();
+      if (!receipt || receipt.status !== 1) throw new Error(`${title} was not confirmed`);
+      addActivity(
+        "success",
+        title,
+        `Account ${callerIndex} confirmed in block ${receipt.blockNumber}`,
+        transaction.hash,
+        receipt.blockNumber,
       );
-      let targetBatchId = batchId.trim() || "GRAPE-WEB-001";
-      const currentKey = (await traceability.batchKey(targetBatchId)) as string;
-      if (await traceability.batchExists(currentKey)) {
-        targetBatchId = `GRAPE-WEB-${Date.now().toString().slice(-6)}`;
-        setBatchId(targetBatchId);
-      }
-      setActivityItems([]);
-      setEvidence(null);
-      addActivity("info", "Full demo started", targetBatchId);
-      await ensureActors();
-      await createBatch(targetBatchId);
-      await transferToTransporter(targetBatchId);
-      const nextEvidence = await processEvidence(targetBatchId);
-      await submitTemperatureEvidence(targetBatchId, nextEvidence);
-      if (!nextEvidence.summary.thresholdBreached) {
-        await transferToRetailer(targetBatchId);
-        await addInspection(targetBatchId);
-      }
-      await recallBatch(targetBatchId);
-      addActivity("success", "End-to-end demo completed", "Final trace is available below");
-    });
-  }, [
-    addActivity,
-    addInspection,
-    batchId,
-    createBatch,
-    ensureActors,
-    processEvidence,
-    recallBatch,
-    requireContext,
-    runAction,
-    submitTemperatureEvidence,
-    transferToRetailer,
-    transferToTransporter,
-  ]);
-
-  const actorsReady = useMemo(
-    () =>
-      actors.length === 5 &&
-      actors.every((actor, index) => actor.active && actor.role === EXPECTED_ROLES[index]),
-    [actors],
+    },
+    [addActivity],
   );
-  const workflowStage = batch?.status ?? 0;
-  const connected = connection === "connected";
-  const workflowSteps: Array<{
-    label: string;
-    complete: boolean;
-    icon: LucideIcon;
-  }> = [
-    { label: "Actors", complete: actorsReady, icon: UserRoundPlus },
-    { label: "Created", complete: workflowStage >= 1, icon: PackagePlus },
-    { label: "In transit", complete: workflowStage >= 2, icon: Truck },
-    { label: "Delivered", complete: workflowStage >= 3, icon: Store },
-    { label: "Recalled", complete: workflowStage === 5, icon: RotateCcw },
-  ];
+
+  const deployActorRegistry = useCallback(async () => {
+    const context = requireContext();
+    const signer = await signerAt(0);
+    const factory = new ContractFactory(
+      ACTOR_REGISTRY_ABI,
+      ACTOR_REGISTRY_ARTIFACT.bytecode,
+      signer,
+    );
+    const contract = await factory.deploy();
+    const transaction = contract.deploymentTransaction();
+    if (!transaction) throw new Error("ActorRegistry deployment transaction is unavailable");
+    await contract.waitForDeployment();
+    const receipt = await transaction.wait();
+    const address = await contract.getAddress();
+    setRegistryAddress(address);
+    setTraceabilityAddress("");
+    setBatch(null);
+    setCustodyHistory([]);
+    setQualityHistory([]);
+    persistDeployment(address, "", chainId);
+    await refreshActors(context, address);
+    addActivity(
+      "success",
+      "ActorRegistry deployed",
+      `Administrator is Account 0, block ${receipt?.blockNumber ?? "confirmed"}`,
+      transaction.hash,
+      receipt?.blockNumber,
+    );
+  }, [addActivity, chainId, persistDeployment, refreshActors, requireContext, signerAt]);
+
+  const deployTraceability = useCallback(async () => {
+    const actorRegistry = requireRegistry();
+    const signer = await signerAt(0);
+    const factory = new ContractFactory(
+      GRAPE_TRACEABILITY_ABI,
+      GRAPE_TRACEABILITY_ARTIFACT.bytecode,
+      signer,
+    );
+    const contract = await factory.deploy(actorRegistry);
+    const transaction = contract.deploymentTransaction();
+    if (!transaction) throw new Error("GrapeTraceability deployment transaction is unavailable");
+    await contract.waitForDeployment();
+    const receipt = await transaction.wait();
+    const address = await contract.getAddress();
+    setTraceabilityAddress(address);
+    persistDeployment(actorRegistry, address, chainId);
+    addActivity(
+      "success",
+      "GrapeTraceability deployed",
+      `ActorRegistry linked, block ${receipt?.blockNumber ?? "confirmed"}`,
+      transaction.hash,
+      receipt?.blockNumber,
+    );
+  }, [addActivity, chainId, persistDeployment, requireRegistry, signerAt]);
+
+  const clearDeployment = useCallback(() => {
+    localStorage.removeItem(STORAGE_KEY);
+    setRegistryAddress("");
+    setTraceabilityAddress("");
+    setBatch(null);
+    setCustodyHistory([]);
+    setQualityHistory([]);
+    setEvidence(null);
+    const context = contextRef.current;
+    if (context) {
+      setActors(context.accounts.map((address) => ({ address, role: 0, active: false })));
+    }
+    addActivity("info", "Saved deployment cleared", "Existing contracts remain on the local chain");
+  }, [addActivity]);
+
+  const registerActor = useCallback(async () => {
+    const address = requireRegistry();
+    const context = requireContext();
+    if (registerCaller === registerTarget) throw new Error("Caller and target must be different accounts");
+    const registry = new Contract(address, ACTOR_REGISTRY_ABI, await signerAt(registerCaller));
+    await sendTransaction(
+      `Register ${ROLE_NAMES[registerRole]}`,
+      registerCaller,
+      registry.registerActor(context.accounts[registerTarget], registerRole),
+    );
+    await refreshActors(context, address);
+  }, [refreshActors, registerCaller, registerRole, registerTarget, requireContext, requireRegistry, sendTransaction, signerAt]);
+
+  const createBatch = useCallback(async () => {
+    const address = requireTraceability();
+    const trimmedBatchId = batchId.trim();
+    if (!trimmedBatchId || !productType.trim()) throw new Error("Batch ID and product type are required");
+    const timestamp = Math.floor(new Date(harvestDate).getTime() / 1000);
+    if (!Number.isFinite(timestamp) || timestamp <= 0) throw new Error("Enter a valid harvest date");
+    const traceability = new Contract(address, GRAPE_TRACEABILITY_ABI, await signerAt(batchCaller));
+    await sendTransaction(
+      "Create grape batch",
+      batchCaller,
+      traceability.createBatch(trimmedBatchId, productType.trim(), timestamp),
+    );
+    await refreshBatch(trimmedBatchId, address);
+  }, [batchCaller, batchId, harvestDate, productType, refreshBatch, requireTraceability, sendTransaction, signerAt]);
+
+  const transferCustody = useCallback(async () => {
+    const address = requireTraceability();
+    const context = requireContext();
+    if (custodyCaller === custodyTarget) throw new Error("Caller and new custodian must be different");
+    if (!custodyEvidence.trim()) throw new Error("Enter delivery evidence or a bytes32 hash");
+    const traceability = new Contract(address, GRAPE_TRACEABILITY_ABI, await signerAt(custodyCaller));
+    const key = (await traceability.batchKey(batchId.trim())) as string;
+    await sendTransaction(
+      "Transfer batch custody",
+      custodyCaller,
+      traceability.transferCustody(
+        key,
+        context.accounts[custodyTarget],
+        hashEvidence(custodyEvidence),
+      ),
+    );
+    await refreshBatch(batchId.trim(), address);
+  }, [batchId, custodyCaller, custodyEvidence, custodyTarget, refreshBatch, requireContext, requireTraceability, sendTransaction, signerAt]);
+
+  const chooseCustodyRoute = useCallback((route: "pickup" | "delivery") => {
+    if (route === "pickup") {
+      setCustodyCaller(2);
+      setCustodyTarget(3);
+      setCustodyEvidence(`pickup:${batchId.trim()}`);
+    } else {
+      setCustodyCaller(3);
+      setCustodyTarget(4);
+      setCustodyEvidence(`delivery:${batchId.trim()}`);
+    }
+  }, [batchId]);
+
+  const processTemperature = useCallback(async () => {
+    const values = temperatureValues
+      .split(/[\s,]+/)
+      .filter(Boolean)
+      .map(Number);
+    const nextEvidence = await processTemperatureEvidence(batchId.trim(), {
+      sensorId,
+      allowedMinC: Number(allowedMin),
+      allowedMaxC: Number(allowedMax),
+      values,
+    });
+    setEvidence(nextEvidence);
+    addActivity(
+      "success",
+      "Off-chain temperature calculation",
+      `${nextEvidence.summary.readingCount} readings, breached=${nextEvidence.summary.thresholdBreached}`,
+    );
+  }, [addActivity, allowedMax, allowedMin, batchId, sensorId, temperatureValues]);
+
+  const submitTemperature = useCallback(async () => {
+    const address = requireTraceability();
+    if (!evidence || evidence.batchId !== batchId.trim()) {
+      throw new Error("Process temperature evidence for the current batch first");
+    }
+    const traceability = new Contract(address, GRAPE_TRACEABILITY_ABI, await signerAt(oracleCaller));
+    const key = (await traceability.batchKey(batchId.trim())) as string;
+    await sendTransaction(
+      "Submit temperature quality record",
+      oracleCaller,
+      traceability.addQualityRecord(
+        key,
+        0,
+        evidence.evidenceHash,
+        evidence.summaryHash,
+        evidence.uri,
+        evidence.summary.thresholdBreached,
+      ),
+    );
+    await refreshBatch(batchId.trim(), address);
+  }, [batchId, evidence, oracleCaller, refreshBatch, requireTraceability, sendTransaction, signerAt]);
+
+  const flagContaminated = useCallback(async () => {
+    const address = requireTraceability();
+    if (!flagReason.trim() || !flagUri.trim()) throw new Error("Reason and evidence URI are required");
+    const traceability = new Contract(address, GRAPE_TRACEABILITY_ABI, await signerAt(flagCaller));
+    const key = (await traceability.batchKey(batchId.trim())) as string;
+    await sendTransaction(
+      "Flag batch as contaminated",
+      flagCaller,
+      traceability.flagContaminated(key, hashEvidence(flagReason), flagUri.trim()),
+    );
+    await refreshBatch(batchId.trim(), address);
+  }, [batchId, flagCaller, flagReason, flagUri, refreshBatch, requireTraceability, sendTransaction, signerAt]);
+
+  const recallBatch = useCallback(async () => {
+    const address = requireTraceability();
+    if (!recallReason.trim() || !recallUri.trim()) throw new Error("Reason and evidence URI are required");
+    const traceability = new Contract(address, GRAPE_TRACEABILITY_ABI, await signerAt(recallCaller));
+    const key = (await traceability.batchKey(batchId.trim())) as string;
+    await sendTransaction(
+      "Recall grape batch",
+      recallCaller,
+      traceability.markRecalled(key, hashEvidence(recallReason), recallUri.trim()),
+    );
+    await refreshBatch(batchId.trim(), address);
+  }, [batchId, recallCaller, recallReason, recallUri, refreshBatch, requireTraceability, sendTransaction, signerAt]);
 
   const copyValue = useCallback(async (value: string) => {
     await navigator.clipboard.writeText(value);
     addActivity("info", "Copied to clipboard", shortHash(value));
   }, [addActivity]);
 
+  const downloadStoredFile = useCallback((storageKey: string, filename: string) => {
+    const value = localStorage.getItem(storageKey);
+    if (!value) throw new Error("The off-chain file is not available in browser storage");
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(new Blob([value], { type: "application/json" }));
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  }, []);
+
+  const accountName = useCallback((index: number): string => {
+    const actor = actors[index];
+    if (actor?.active && actor.role !== ROLE.None) return ROLE_NAMES[actor.role];
+    return index === 0 ? "Deployer" : `Account ${index}`;
+  }, [actors]);
+
+  const accountOptions = useMemo(
+    () => accounts.map((address, index) => (
+      <option value={index} key={address}>
+        {index}: {accountName(index)} - {shortAddress(address)}
+      </option>
+    )),
+    [accountName, accounts],
+  );
+
+  const contractsReady = Boolean(registryAddress && traceabilityAddress);
+  const actorsReady = EXPECTED_ROLES.every(
+    (role, index) => actors[index]?.active && actors[index]?.role === role,
+  );
+  const stepComplete = useMemo<Record<StepId, boolean>>(() => ({
+    deploy: contractsReady,
+    actors: actorsReady,
+    batch: Boolean(batch),
+    custody: custodyHistory.length > 0,
+    quality: qualityHistory.length > 0,
+    flag: batch?.status === 4 || batch?.status === 5,
+    recall: batch?.status === 5,
+    query: Boolean(batch),
+  }), [actorsReady, batch, contractsReady, custodyHistory.length, qualityHistory.length]);
+
+  const renderAccountField = (
+    idValue: string,
+    label: string,
+    value: number,
+    onChange: (value: number) => void,
+  ) => (
+    <label className="field" htmlFor={idValue}>
+      <span>{label}</span>
+      <select
+        id={idValue}
+        value={value}
+        onChange={(event) => onChange(Number(event.target.value))}
+        disabled={Boolean(busyAction)}
+      >
+        {accountOptions}
+      </select>
+    </label>
+  );
+
+  const actionButton = (
+    label: string,
+    icon: LucideIcon,
+    action: () => Promise<void>,
+    disabled = false,
+    danger = false,
+  ) => {
+    const Icon = icon;
+    return (
+      <button
+        className={`command-button ${danger ? "danger" : ""}`}
+        type="button"
+        onClick={() => void runAction(label, action)}
+        disabled={disabled || connection !== "connected" || Boolean(busyAction)}
+      >
+        {busyAction === label ? <RefreshCw className="spin" size={17} /> : <Icon size={17} />}
+        {busyAction === label ? "Waiting for confirmation" : label}
+      </button>
+    );
+  };
+
   return (
     <div className="app-shell">
       <header className="topbar">
         <div className="brand-block">
-          <div className="brand-mark" aria-hidden="true">
-            <Grape size={24} strokeWidth={2} />
-          </div>
+          <div className="brand-mark"><Grape size={24} /></div>
           <div>
-            <h1>Fresh Grape Traceability</h1>
-            <p>Hardhat localhost · Direct ethers.js DApp</p>
+            <h1>Fresh Grape Traceability Console</h1>
+            <p>Manual transaction workflow on Hardhat localhost</p>
           </div>
         </div>
-        <div className="connection-cluster">
-          <span className={`connection-dot ${connection}`} aria-hidden="true" />
+        <div className="network-block">
+          <span className={`connection-dot ${connection}`} />
           <div>
-            <strong>{connection === "connected" ? "Connected" : "Local node"}</strong>
+            <strong>{connection === "connected" ? `Chain ${chainId}` : "Local node"}</strong>
             <span>{connectionMessage}</span>
           </div>
           <button
-            className="icon-button"
+            className="icon-button dark"
             type="button"
-            onClick={() => void connect()}
-            title="Reconnect local contracts"
-            aria-label="Reconnect local contracts"
-            disabled={busy}
+            title="Reconnect Hardhat node"
+            aria-label="Reconnect Hardhat node"
+            onClick={() => void connectNode()}
+            disabled={Boolean(busyAction)}
           >
             <RefreshCw size={17} />
           </button>
@@ -680,249 +792,330 @@ export default function App() {
 
       {connection === "error" && (
         <div className="setup-banner" role="alert">
-          <AlertTriangle size={19} />
+          <AlertTriangle size={18} />
           <span>{connectionMessage}</span>
-          <code>pnpm node:local → pnpm deploy:localhost → pnpm frontend:dev</code>
+          <code>pnpm node:local</code>
         </div>
       )}
 
       <main>
-        <section className="control-band" aria-label="Demo controls">
-          <div className="batch-input-group">
-            <label htmlFor="batch-id">Batch ID</label>
+        <section className="context-bar">
+          <label className="batch-context" htmlFor="global-batch-id">
+            <span>Active batch ID</span>
             <input
-              id="batch-id"
+              id="global-batch-id"
               value={batchId}
-              onChange={(event) => setBatchId(event.target.value)}
-              disabled={busy}
+              onChange={(event) => {
+                setBatchId(event.target.value);
+                setEvidence(null);
+              }}
+              disabled={Boolean(busyAction)}
             />
-          </div>
-          <div className="primary-actions">
-            <button
-              className="primary-button"
-              type="button"
-              onClick={() => void runFullDemo()}
-              disabled={!connected || busy}
-            >
-              {busy ? <RefreshCw className="spin" size={17} /> : <Play size={17} fill="currentColor" />}
-              {busy ? "Running" : "Run full demo"}
-            </button>
-            <button
-              className="secondary-button"
-              type="button"
-              onClick={() => void runAction(async () => refreshBatch())}
-              disabled={!connected || busy}
-            >
-              <RefreshCw size={17} />
-              Refresh trace
+          </label>
+          <div className="context-status">
+            <span>Registry</span>
+            <button type="button" onClick={() => void copyValue(registryAddress)} disabled={!registryAddress}>
+              {shortAddress(registryAddress)} <Clipboard size={13} />
             </button>
           </div>
-          <div className="contract-addresses">
-            <div>
-              <span>ActorRegistry</span>
-              <strong>{shortAddress(deployment?.actorRegistry ?? "")}</strong>
-            </div>
-            <div>
-              <span>GrapeTraceability</span>
-              <strong>{shortAddress(deployment?.grapeTraceability ?? "")}</strong>
-            </div>
+          <div className="context-status">
+            <span>Traceability</span>
+            <button type="button" onClick={() => void copyValue(traceabilityAddress)} disabled={!traceabilityAddress}>
+              {shortAddress(traceabilityAddress)} <Clipboard size={13} />
+            </button>
           </div>
+          <button
+            className="query-button"
+            type="button"
+            onClick={() => void runAction("Query trace", async () => { await refreshBatch(); })}
+            disabled={!contractsReady || Boolean(busyAction)}
+          >
+            <Search size={16} /> Query trace
+          </button>
         </section>
 
-        <section className="workflow" aria-label="Traceability workflow">
-          {workflowSteps.map(({ label, complete, icon: Icon }, index) => (
-            <div className="workflow-item" key={label}>
-              <div className={`workflow-node ${complete ? "complete" : ""}`}>
-                <Icon size={18} />
-              </div>
-              <span>{String(label)}</span>
-              {index < 4 && <div className={`workflow-line ${complete ? "complete" : ""}`} />}
+        <div className="workspace-grid">
+          <nav className="step-nav" aria-label="Demo transaction steps">
+            <div className="step-nav-heading">
+              <span>Transaction workflow</span>
+              <strong>{Object.values(stepComplete).filter(Boolean).length}/8 complete</strong>
             </div>
-          ))}
-        </section>
-
-        <div className="dashboard-grid">
-          <section className="panel actors-panel">
-            <div className="panel-heading">
-              <div>
-                <span className="section-kicker">Access control</span>
-                <h2>Actors and roles</h2>
-              </div>
+            {STEPS.map(({ id: stepId, label, contract, icon: Icon }, index) => (
               <button
-                className="secondary-button compact"
                 type="button"
-                onClick={() => void runAction(ensureActors)}
-                disabled={!connected || busy}
+                className={`step-button ${selectedStep === stepId ? "selected" : ""}`}
+                onClick={() => setSelectedStep(stepId)}
+                key={stepId}
               >
-                <ShieldCheck size={16} />
-                Initialise
+                <span className={`step-index ${stepComplete[stepId] ? "complete" : ""}`}>
+                  {stepComplete[stepId] ? <Check size={15} /> : index + 1}
+                </span>
+                <span>
+                  <strong>{label}</strong>
+                  <small>{contract}</small>
+                </span>
+                <Icon size={17} />
               </button>
-            </div>
-            <div className="actor-list">
-              {actors.length === 0
-                ? ACTOR_LABELS.map((label) => (
-                    <div className="actor-row muted" key={label}>
-                      <span className="actor-index">–</span>
-                      <div><strong>{label}</strong><span>Waiting for local node</span></div>
-                    </div>
-                  ))
-                : actors.map((actor, index) => (
-                    <div className="actor-row" key={actor.address}>
-                      <span className="actor-index">{index}</span>
-                      <div>
-                        <strong>{actor.label}</strong>
-                        <span>{shortAddress(actor.address)}</span>
-                      </div>
-                      <span className={`role-state ${actor.active ? "active" : ""}`}>
-                        {ROLE_NAMES[actor.role]}
-                      </span>
-                    </div>
-                  ))}
-            </div>
-          </section>
+            ))}
+          </nav>
 
-          <section className="panel batch-panel">
-            <div className="panel-heading">
-              <div>
-                <span className="section-kicker">On-chain state</span>
-                <h2>{batch?.externalId ?? "No batch registered"}</h2>
-              </div>
-              <span className={`status-badge status-${batch?.status ?? 0}`}>
-                {STATUS_NAMES[batch?.status ?? 0]}
-              </span>
-            </div>
-            <div className="batch-metrics">
-              <div><span>Custodian</span><strong>{shortAddress(batch?.currentCustodian ?? "")}</strong></div>
-              <div><span>Transfers</span><strong>{batch?.transferCount ?? 0}</strong></div>
-              <div><span>Quality records</span><strong>{batch?.qualityRecordCount ?? 0}</strong></div>
-            </div>
-            <div className="action-grid">
-              <button type="button" onClick={() => void runAction(ensureActors)} disabled={!connected || busy}>
-                <UserRoundPlus size={17} /> Register actors
-              </button>
-              <button type="button" onClick={() => void runAction(async () => { await createBatch(batchId); })} disabled={!connected || busy}>
-                <PackagePlus size={17} /> Create batch
-              </button>
-              <button type="button" onClick={() => void runAction(async () => transferToTransporter(batchId))} disabled={!connected || busy}>
-                <Truck size={17} /> Pickup
-              </button>
-              <button type="button" onClick={() => void runAction(async () => { await processEvidence(batchId); })} disabled={!connected || busy}>
-                <Thermometer size={17} /> Process temperature
-              </button>
-              <button type="button" onClick={() => void runAction(async () => submitTemperatureEvidence(batchId))} disabled={!connected || busy}>
-                <CloudUpload size={17} /> Submit oracle result
-              </button>
-              <button type="button" onClick={() => void runAction(async () => transferToRetailer(batchId))} disabled={!connected || busy}>
-                <Store size={17} /> Deliver to retailer
-              </button>
-              <button type="button" onClick={() => void runAction(async () => addInspection(batchId))} disabled={!connected || busy}>
-                <FileCheck2 size={17} /> Add inspection
-              </button>
-              <button className="danger-action" type="button" onClick={() => void runAction(async () => recallBatch(batchId))} disabled={!connected || busy}>
-                <RotateCcw size={17} /> Recall batch
-              </button>
-            </div>
-          </section>
-
-          <section className="panel evidence-panel">
-            <div className="panel-heading">
-              <div>
-                <span className="section-kicker">Off-chain evidence</span>
-                <h2>Temperature oracle</h2>
-              </div>
-              <Database size={20} />
-            </div>
-            {evidence ? (
+          <section className="workbench">
+            {selectedStep === "deploy" && (
               <>
-                <div className="temperature-metrics">
-                  <div><span>Minimum</span><strong>{evidence.summary.minimumC}°C</strong></div>
-                  <div><span>Average</span><strong>{evidence.summary.averageC}°C</strong></div>
-                  <div><span>Maximum</span><strong>{evidence.summary.maximumC}°C</strong></div>
+                <div className="workbench-heading">
+                  <div><span>Step 1</span><h2>Deploy two smart contracts</h2></div>
+                  <Rocket size={22} />
                 </div>
-                <div className="hash-list">
-                  <div>
-                    <span>Evidence SHA-256</span>
-                    <code>{shortHash(evidence.evidenceHash)}</code>
-                    <button className="icon-button" type="button" title="Copy evidence hash" aria-label="Copy evidence hash" onClick={() => void copyValue(evidence.evidenceHash)}><Clipboard size={15} /></button>
+                <div className="deployment-row">
+                  <div className="deployment-copy">
+                    <strong>ActorRegistry.sol</strong>
+                    <span>Deployer and initial Administrator: Account 0</span>
+                    <code>{registryAddress || "Awaiting deployment"}</code>
                   </div>
-                  <div>
-                    <span>Summary SHA-256</span>
-                    <code>{shortHash(evidence.summaryHash)}</code>
-                    <button className="icon-button" type="button" title="Copy summary hash" aria-label="Copy summary hash" onClick={() => void copyValue(evidence.summaryHash)}><Clipboard size={15} /></button>
-                  </div>
-                  <div>
-                    <span>Evidence URI</span>
-                    <code>{evidence.uri}</code>
-                  </div>
+                  {actionButton("Deploy ActorRegistry", Rocket, deployActorRegistry)}
                 </div>
-                <div className={`threshold-result ${evidence.summary.thresholdBreached ? "breached" : "safe"}`}>
-                  {evidence.summary.thresholdBreached ? <AlertTriangle size={17} /> : <CheckCircle2 size={17} />}
-                  <span>{evidence.summary.thresholdBreached ? "Threshold breached" : "Temperature within threshold"}</span>
+                <div className="deployment-row">
+                  <div className="deployment-copy">
+                    <strong>GrapeTraceability.sol</strong>
+                    <span>Constructor parameter: ActorRegistry address</span>
+                    <code>{traceabilityAddress || "Awaiting deployment"}</code>
+                  </div>
+                  {actionButton("Deploy Traceability", Rocket, deployTraceability, !registryAddress)}
+                </div>
+                <div className="secondary-command-row">
+                  <button type="button" onClick={clearDeployment} disabled={Boolean(busyAction)}>
+                    <RotateCcw size={15} /> Clear saved addresses
+                  </button>
                 </div>
               </>
-            ) : (
-              <div className="empty-state">
-                <Thermometer size={28} />
-                <strong>No evidence generated</strong>
-                <span>Temperature evidence will appear during the demo.</span>
-              </div>
+            )}
+
+            {selectedStep === "actors" && (
+              <>
+                <div className="workbench-heading">
+                  <div><span>Step 2</span><h2>Register a participant role</h2></div>
+                  <ShieldCheck size={22} />
+                </div>
+                <div className="form-grid three-columns">
+                  {renderAccountField("register-caller", "Caller account", registerCaller, setRegisterCaller)}
+                  {renderAccountField("register-target", "Participant address", registerTarget, setRegisterTarget)}
+                  <label className="field" htmlFor="register-role">
+                    <span>Role to assign</span>
+                    <select id="register-role" value={registerRole} onChange={(event) => setRegisterRole(Number(event.target.value))}>
+                      {ROLE_NAMES.slice(1).map((name, index) => <option value={index + 1} key={name}>{name}</option>)}
+                    </select>
+                  </label>
+                </div>
+                <div className="command-row">
+                  {actionButton("Send registerActor transaction", UserRoundPlus, registerActor, !contractsReady)}
+                </div>
+              </>
+            )}
+
+            {selectedStep === "batch" && (
+              <>
+                <div className="workbench-heading">
+                  <div><span>Step 3</span><h2>Register a grape batch</h2></div>
+                  <PackagePlus size={22} />
+                </div>
+                <div className="form-grid two-columns">
+                  {renderAccountField("batch-caller", "Caller account", batchCaller, setBatchCaller)}
+                  <label className="field" htmlFor="batch-external-id">
+                    <span>External batch ID</span>
+                    <input id="batch-external-id" value={batchId} onChange={(event) => setBatchId(event.target.value)} />
+                  </label>
+                  <label className="field" htmlFor="product-type">
+                    <span>Product type</span>
+                    <input id="product-type" value={productType} onChange={(event) => setProductType(event.target.value)} />
+                  </label>
+                  <label className="field" htmlFor="harvest-date">
+                    <span>Harvest date</span>
+                    <input id="harvest-date" type="datetime-local" value={harvestDate} onChange={(event) => setHarvestDate(event.target.value)} />
+                  </label>
+                </div>
+                <div className="command-row">
+                  {actionButton("Send createBatch transaction", PackagePlus, createBatch, !contractsReady)}
+                </div>
+              </>
+            )}
+
+            {selectedStep === "custody" && (
+              <>
+                <div className="workbench-heading">
+                  <div><span>Step 4</span><h2>Transfer batch custody</h2></div>
+                  <Truck size={22} />
+                </div>
+                <div className="segmented-control" aria-label="Custody route preset">
+                  <button type="button" onClick={() => chooseCustodyRoute("pickup")}>Producer to Transporter</button>
+                  <button type="button" onClick={() => chooseCustodyRoute("delivery")}>Transporter to Retailer</button>
+                </div>
+                <div className="form-grid two-columns">
+                  {renderAccountField("custody-caller", "Current custodian / caller", custodyCaller, setCustodyCaller)}
+                  {renderAccountField("custody-target", "New custodian", custodyTarget, setCustodyTarget)}
+                  <label className="field full-width" htmlFor="custody-evidence">
+                    <span>Delivery evidence text or bytes32 hash</span>
+                    <input id="custody-evidence" value={custodyEvidence} onChange={(event) => setCustodyEvidence(event.target.value)} />
+                  </label>
+                </div>
+                <div className="parameter-preview"><span>Batch key source</span><code>{batchId || "Enter a batch ID"}</code></div>
+                <div className="command-row">
+                  {actionButton("Send transferCustody transaction", Truck, transferCustody, !contractsReady)}
+                </div>
+              </>
+            )}
+
+            {selectedStep === "quality" && (
+              <>
+                <div className="workbench-heading">
+                  <div><span>Step 5</span><h2>Process and submit temperature evidence</h2></div>
+                  <Thermometer size={22} />
+                </div>
+                <div className="form-grid three-columns">
+                  <label className="field" htmlFor="sensor-id"><span>Sensor ID</span><input id="sensor-id" value={sensorId} onChange={(event) => setSensorId(event.target.value)} /></label>
+                  <label className="field" htmlFor="allowed-min"><span>Allowed minimum C</span><input id="allowed-min" type="number" step="0.1" value={allowedMin} onChange={(event) => setAllowedMin(event.target.value)} /></label>
+                  <label className="field" htmlFor="allowed-max"><span>Allowed maximum C</span><input id="allowed-max" type="number" step="0.1" value={allowedMax} onChange={(event) => setAllowedMax(event.target.value)} /></label>
+                  <label className="field full-width" htmlFor="temperature-values"><span>Temperature readings, separated by commas</span><textarea id="temperature-values" value={temperatureValues} onChange={(event) => setTemperatureValues(event.target.value)} /></label>
+                </div>
+                <div className="command-row split">
+                  {actionButton("Run off-chain calculation", Database, processTemperature, !contractsReady)}
+                  {renderAccountField("oracle-caller", "Oracle submitter / caller", oracleCaller, setOracleCaller)}
+                  {actionButton("Submit addQualityRecord", CloudUpload, submitTemperature, !evidence || !contractsReady)}
+                </div>
+                {evidence && (
+                  <div className="evidence-output">
+                    <div><span>Minimum</span><strong>{evidence.summary.minimumC} C</strong></div>
+                    <div><span>Average</span><strong>{evidence.summary.averageC} C</strong></div>
+                    <div><span>Maximum</span><strong>{evidence.summary.maximumC} C</strong></div>
+                    <div><span>Breach</span><strong className={evidence.summary.thresholdBreached ? "bad" : "good"}>{String(evidence.summary.thresholdBreached)}</strong></div>
+                    <div className="hash-output"><span>Evidence SHA-256</span><code>{evidence.evidenceHash}</code><button type="button" onClick={() => void copyValue(evidence.evidenceHash)}><Clipboard size={14} /></button></div>
+                    <div className="hash-output"><span>Summary SHA-256</span><code>{evidence.summaryHash}</code><button type="button" onClick={() => void copyValue(evidence.summaryHash)}><Clipboard size={14} /></button></div>
+                    <div className="download-row">
+                      <button type="button" onClick={() => downloadStoredFile(evidence.rawStorageKey, `${batchId}-temperature.json`)}><Download size={15} /> Raw file</button>
+                      <button type="button" onClick={() => downloadStoredFile(evidence.summaryStorageKey, `${batchId}-summary.json`)}><Download size={15} /> Summary file</button>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+
+            {selectedStep === "flag" && (
+              <>
+                <div className="workbench-heading">
+                  <div><span>Step 6</span><h2>Flag a contaminated batch</h2></div>
+                  <Flag size={22} />
+                </div>
+                <div className="form-grid two-columns">
+                  {renderAccountField("flag-caller", "Retailer or Regulator caller", flagCaller, setFlagCaller)}
+                  <label className="field" htmlFor="flag-reason"><span>Reason text or bytes32 hash</span><input id="flag-reason" value={flagReason} onChange={(event) => setFlagReason(event.target.value)} /></label>
+                  <label className="field full-width" htmlFor="flag-uri"><span>Off-chain evidence URI</span><input id="flag-uri" value={flagUri} onChange={(event) => setFlagUri(event.target.value)} /></label>
+                </div>
+                <div className="command-row">
+                  {actionButton("Send flagContaminated transaction", Flag, flagContaminated, !contractsReady, true)}
+                </div>
+              </>
+            )}
+
+            {selectedStep === "recall" && (
+              <>
+                <div className="workbench-heading">
+                  <div><span>Step 7</span><h2>Recall an affected batch</h2></div>
+                  <RotateCcw size={22} />
+                </div>
+                <div className="form-grid two-columns">
+                  {renderAccountField("recall-caller", "Regulator or Retailer caller", recallCaller, setRecallCaller)}
+                  <label className="field" htmlFor="recall-reason"><span>Recall reason text or bytes32 hash</span><input id="recall-reason" value={recallReason} onChange={(event) => setRecallReason(event.target.value)} /></label>
+                  <label className="field full-width" htmlFor="recall-uri"><span>Recall document URI</span><input id="recall-uri" value={recallUri} onChange={(event) => setRecallUri(event.target.value)} /></label>
+                </div>
+                <div className="command-row">
+                  {actionButton("Send markRecalled transaction", RotateCcw, recallBatch, !contractsReady, true)}
+                </div>
+              </>
+            )}
+
+            {selectedStep === "query" && (
+              <>
+                <div className="workbench-heading">
+                  <div><span>Step 8</span><h2>Read the complete trace history</h2></div>
+                  <History size={22} />
+                </div>
+                <div className="query-command">
+                  <label className="field" htmlFor="query-batch-id"><span>Batch ID</span><input id="query-batch-id" value={batchId} onChange={(event) => setBatchId(event.target.value)} /></label>
+                  {actionButton("Query read-only getters", Search, async () => { await refreshBatch(); }, !contractsReady)}
+                </div>
+                <div className="history-section">
+                  <h3>Custody history</h3>
+                  {custodyHistory.length === 0 ? <p className="empty-row">No custody records</p> : custodyHistory.map((record, index) => (
+                    <div className="history-row" key={`${record.from}-${record.transferredAt}`}>
+                      <span>{index + 1}</span>
+                      <strong>{shortAddress(record.from)} to {shortAddress(record.to)}</strong>
+                      <small>{formatTimestamp(record.transferredAt)}</small>
+                      <code>{shortHash(record.deliveryEvidenceHash)}</code>
+                    </div>
+                  ))}
+                </div>
+                <div className="history-section">
+                  <h3>Quality history</h3>
+                  {qualityHistory.length === 0 ? <p className="empty-row">No quality records</p> : qualityHistory.map((record, index) => (
+                    <div className="history-row" key={`${record.evidenceHash}-${index}`}>
+                      <span>{index + 1}</span>
+                      <strong>{QUALITY_NAMES[record.recordType]}</strong>
+                      <small>{shortAddress(record.submittedBy)} / breached={String(record.thresholdBreached)}</small>
+                      <code>{shortHash(record.evidenceHash)}</code>
+                    </div>
+                  ))}
+                </div>
+              </>
             )}
           </section>
-        </div>
 
-        <div className="records-grid">
-          <section className="panel records-panel">
-            <div className="panel-heading">
-              <div><span className="section-kicker">Immutable trace</span><h2>Custody history</h2></div>
-              <Truck size={19} />
+          <aside className="state-monitor">
+            <div className="monitor-heading"><span>Live contract state</span><Activity size={18} /></div>
+            <div className="batch-state">
+              <span>Batch</span>
+              <strong>{batch?.externalId ?? "Not loaded"}</strong>
+              <span className={`status-badge status-${batch?.status ?? 0}`}>{STATUS_NAMES[batch?.status ?? 0]}</span>
             </div>
-            <div className="record-list">
-              {custodyHistory.length === 0 ? (
-                <div className="record-empty">No custody transfers recorded</div>
-              ) : custodyHistory.map((record, index) => (
-                <div className="record-row" key={`${record.from}-${record.transferredAt}`}>
-                  <span className="record-number">{index + 1}</span>
-                  <div><strong>{shortAddress(record.from)} → {shortAddress(record.to)}</strong><span>{formatTime(record.transferredAt)}</span></div>
-                  <code>{shortHash(record.deliveryEvidenceHash)}</code>
+            <dl className="state-list">
+              <div><dt>Current custodian</dt><dd>{shortAddress(batch?.currentCustodian ?? "")}</dd></div>
+              <div><dt>Producer</dt><dd>{shortAddress(batch?.producer ?? "")}</dd></div>
+              <div><dt>Custody transfers</dt><dd>{batch?.transferCount ?? 0}</dd></div>
+              <div><dt>Quality records</dt><dd>{batch?.qualityRecordCount ?? 0}</dd></div>
+            </dl>
+            <div className="monitor-heading actors-heading"><span>Local accounts</span><WalletCards size={18} /></div>
+            <div className="account-list">
+              {actors.slice(0, 6).map((actor, index) => (
+                <div className="account-row" key={actor.address}>
+                  <span>{index}</span>
+                  <div><strong>{accountName(index)}</strong><small>{shortAddress(actor.address)}</small></div>
+                  <em className={actor.active ? "active" : ""}>{actor.active ? "Active" : "Unregistered"}</em>
                 </div>
               ))}
             </div>
-          </section>
-
-          <section className="panel records-panel">
-            <div className="panel-heading">
-              <div><span className="section-kicker">Hash references</span><h2>Quality history</h2></div>
-              <PackageCheck size={19} />
-            </div>
-            <div className="record-list">
-              {qualityHistory.length === 0 ? (
-                <div className="record-empty">No quality evidence recorded</div>
-              ) : qualityHistory.map((record, index) => (
-                <div className="record-row" key={`${record.evidenceHash}-${index}`}>
-                  <span className="record-number">{index + 1}</span>
-                  <div><strong>{QUALITY_NAMES[record.recordType]}</strong><span>{shortAddress(record.submittedBy)} · {formatTime(record.submittedAt)}</span></div>
-                  <code>{shortHash(record.evidenceHash)}</code>
-                </div>
-              ))}
-            </div>
-          </section>
+            {evidence && (
+              <div className={`oracle-state ${evidence.summary.thresholdBreached ? "breached" : "safe"}`}>
+                {evidence.summary.thresholdBreached ? <AlertTriangle size={18} /> : <CheckCircle2 size={18} />}
+                <div><strong>Oracle result</strong><span>{evidence.summary.thresholdBreached ? "Temperature breached" : "Temperature accepted"}</span></div>
+              </div>
+            )}
+          </aside>
         </div>
 
-        <section className="panel activity-panel">
-          <div className="panel-heading">
-            <div><span className="section-kicker">Live confirmations</span><h2>Blockchain activity</h2></div>
-            <Activity size={19} />
+        <section className="activity-panel">
+          <div className="activity-heading">
+            <div><span>Confirmed transactions and local computation</span><h2>Activity log</h2></div>
+            <button type="button" onClick={() => setActivityItems([])} disabled={activityItems.length === 0}><RotateCcw size={15} /> Clear</button>
           </div>
-          <div className="activity-list">
+          <div className="activity-table">
             {activityItems.length === 0 ? (
-              <div className="record-empty">Transactions and oracle actions will appear here</div>
+              <div className="empty-activity">Actions will appear here after you click a command.</div>
             ) : activityItems.map((item) => (
               <div className={`activity-row ${item.status}`} key={item.id}>
                 <span className="activity-icon">
                   {item.status === "success" ? <Check size={15} /> : item.status === "error" ? <AlertTriangle size={15} /> : <Link2 size={15} />}
                 </span>
-                <div><strong>{item.title}</strong><span>{item.detail}</span></div>
-                {item.transactionHash && <code>{shortHash(item.transactionHash)}</code>}
+                <div><strong>{item.title}</strong><small>{item.detail}</small></div>
+                <span>{item.blockNumber ? `Block ${item.blockNumber}` : item.status}</span>
+                <code>{item.transactionHash ? shortHash(item.transactionHash) : "-"}</code>
               </div>
             ))}
           </div>
@@ -931,4 +1124,3 @@ export default function App() {
     </div>
   );
 }
-

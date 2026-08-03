@@ -29,6 +29,13 @@ export interface TemperatureSummary {
   lastReadingAt: string;
 }
 
+export interface TemperatureInput {
+  sensorId: string;
+  allowedMinC: number;
+  allowedMaxC: number;
+  values: number[];
+}
+
 export interface BrowserEvidence {
   batchId: string;
   evidenceHash: `0x${string}`;
@@ -49,24 +56,52 @@ async function sha256(value: Uint8Array): Promise<`0x${string}`> {
   return `0x${bytes.map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
-export async function processTemperatureEvidence(batchId: string): Promise<BrowserEvidence> {
+export async function processTemperatureEvidence(
+  batchId: string,
+  input?: TemperatureInput,
+): Promise<BrowserEvidence> {
   const source = JSON.parse(temperatureSource) as TemperatureLog;
-  const log: TemperatureLog = { ...source, batchId };
+  const values = input?.values ?? source.readings.map((reading) => reading.celsius);
+  if (values.length === 0 || values.some((value) => !Number.isFinite(value))) {
+    throw new Error("Temperature readings must contain at least one valid number");
+  }
+  if (
+    input &&
+    (!Number.isFinite(input.allowedMinC) ||
+      !Number.isFinite(input.allowedMaxC) ||
+      input.allowedMinC >= input.allowedMaxC)
+  ) {
+    throw new Error("The allowed minimum must be lower than the allowed maximum");
+  }
+
+  const baseTimestamp = Date.parse(source.readings[0]?.timestamp ?? new Date().toISOString());
+  const log: TemperatureLog = {
+    batchId,
+    sensorId: input?.sensorId.trim() || source.sensorId,
+    allowedMinC: input?.allowedMinC ?? source.allowedMinC,
+    allowedMaxC: input?.allowedMaxC ?? source.allowedMaxC,
+    readings: values.map((celsius, index) => ({
+      timestamp:
+        source.readings[index]?.timestamp ??
+        new Date(baseTimestamp + index * 2 * 60 * 60 * 1000).toISOString(),
+      celsius,
+    })),
+  };
   const readings = [...log.readings].sort(
     (left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp),
   );
-  const values = readings.map((reading) => reading.celsius);
-  const total = values.reduce((sum, value) => sum + value, 0);
-  const breachCount = values.filter(
+  const sortedValues = readings.map((reading) => reading.celsius);
+  const total = sortedValues.reduce((sum, value) => sum + value, 0);
+  const breachCount = sortedValues.filter(
     (value) => value < log.allowedMinC || value > log.allowedMaxC,
   ).length;
   const summary: TemperatureSummary = {
     batchId,
     sensorId: log.sensorId,
-    readingCount: values.length,
-    minimumC: Math.min(...values),
-    maximumC: Math.max(...values),
-    averageC: Number((total / values.length).toFixed(2)),
+    readingCount: sortedValues.length,
+    minimumC: Math.min(...sortedValues),
+    maximumC: Math.max(...sortedValues),
+    averageC: Number((total / sortedValues.length).toFixed(2)),
     allowedMinC: log.allowedMinC,
     allowedMaxC: log.allowedMaxC,
     breachCount,
@@ -110,4 +145,3 @@ export async function processInspectionEvidence(batchId: string): Promise<{
   localStorage.setItem(storageKey, text);
   return { hash, uri: `browser-storage://inspection/${batchId}`, storageKey };
 }
-

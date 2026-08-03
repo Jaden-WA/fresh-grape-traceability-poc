@@ -9,9 +9,24 @@ Install and verify:
 2. Run: pnpm install
 3. Run: pnpm build
 4. Run: pnpm test
-5. Run: pnpm demo
 
-The demo deploys ActorRegistry.sol and GrapeTraceability.sol to a local Hardhat
+Interactive presentation DApp:
+1. Keep terminal 1 running: pnpm node:local
+2. Keep terminal 2 running: pnpm frontend:dev
+3. Open: http://127.0.0.1:5173
+4. Use the eight workflow steps to deploy the contracts, register actors,
+   create a batch, transfer custody, process temperature evidence, flag or
+   recall the batch, and query its history.
+
+Each state-changing button sends a real transaction to the local Hardhat EVM.
+The browser uses ethers.js directly and does not require a traditional backend.
+Run pnpm build again whenever a Solidity contract changes because the Vite
+frontend reads its ABI and bytecode from the generated Hardhat artifacts.
+
+Optional scripted integration check:
+Run: pnpm demo
+
+The script deploys ActorRegistry.sol and GrapeTraceability.sol to a local Hardhat
 EVM, registers all five actor types, creates a grape batch, transfers custody,
 runs the off-chain temperature oracle, stores detailed evidence off-chain,
 submits hashes on-chain, records inspection evidence, recalls the batch, and
